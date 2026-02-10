@@ -5,8 +5,8 @@ import requests
 # 1. Функция отправки уведомления (использует секреты из настроек Streamlit)
 def send_telegram_msg(text):
     try:
-        token = st.secrets["AAHmqjjDbFs2F54FZqxXjYLpuRK1uTSlqp0"]
-        chat_id = st.secrets["8374801663"]
+        token = st.secrets["8374801663:AAHmqjjDbFs2F54FZqxXjYLpuRK1uTSlqp0"]
+        chat_id = st.secrets["5291647690"]
         url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={text}"
         requests.get(url)
     except Exception as e:
