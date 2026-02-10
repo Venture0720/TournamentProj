@@ -5,12 +5,14 @@ import requests
 # 1. Функция отправки уведомления (использует секреты из настроек Streamlit)
 def send_telegram_msg(text):
     try:
+        # Мы просим Streamlit дать нам значение, 
+        # которое лежит под именем "TELEGRAM_TOKEN"
         token = st.secrets["8374801663:AAHmqjjDbFs2F54FZqxXjYLpuRK1uTSlqp0"]
         chat_id = st.secrets["5291647690"]
         url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={text}"
         requests.get(url)
     except Exception as e:
-        st.error(f"Ошибка отправки в Telegram: {e}")
+        st.error(f"Ошибка доступа к секретам: {e}")
 
 # Заголовок приложения
 st.set_page_config(page_title="Smart Shygyn", page_icon="💧")
