@@ -1,5 +1,21 @@
 import streamlit as st
 import pandas as pd
+import requests
+
+# Функция отправки уведомления
+def send_telegram_msg(text):
+    token = st.secrets["8374801663:AAHmqjjDbFs2F54FZqxXjYLpuRK1uTSlqp0"]
+    chat_id = st.secrets["smartshygyn_bot"]
+    url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={text}"
+    requests.get(url)
+
+# Твой основной код дальше...
+# В месте, где выявляется утечка, добавь:
+if total_leaks > 0:
+    st.error("Обнаружена утечка! Отправляем уведомление...")
+    send_telegram_msg(f"⚠️ ТРЕВОГА! В секторе найдена утечка. Потери: {lost_litres} литров.")
+import streamlit as st
+import pandas as pd
 
 # Заголовок приложения
 st.title("💧 Smart Shygyn: ИИ-мониторинг воды")
