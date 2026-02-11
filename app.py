@@ -3,77 +3,121 @@ import pandas as pd
 import numpy as np
 import wntr
 import requests
+import random
 
-# --- КОНФИГУРАЦИЯ ---
+# --- 1. ФУНКЦИИ (Backend) ---
+
+def send_telegram_msg(text):
+    try:
+        token = st.secrets["TELEGRAM_TOKEN"]
+        chat_id = st.secrets["CHAT_ID"]
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        params = {"chat_id": chat_id, "text": text}
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            st.success("✅ Отчет доставлен в Telegram!")
+        else:
+            st.error(f"Ошибка Telegram: {response.text}")
+    except Exception as e:
+        st.error(f"Ошибка секретов: {e}")
+
+def run_epanet_simulation():
+    wn = wntr.network.WaterNetworkModel()
+    
+    # Случайные параметры для разнообразия данных
+    start_p = random.uniform(28, 42)
+    leak_hr = random.randint(10, 16)
+    
+    wn.add_reservoir('res', base_head=start_p)
+    wn.add_junction('node1', base_demand=0.005, elevation=10)
+    wn.add_junction('node2', base_demand=0.005, elevation=10)
+    wn.add_pipe('p1', 'res', 'node1', length=100, diameter=0.2, roughness=100)
+    wn.add_pipe('p2', 'node1', 'node2', length=100, diameter=0.2, roughness=100)
+    
+    wn.options.time.duration = 24 * 3600
+    wn.options.time.report_timestep = 3600
+    
+    # Добавляем утечку
+    node2 = wn.get_node('node2')
+    node2.add_leak(wn, area=0.05, start_time=leak_hr * 3600)
+    
+    sim = wntr.sim.EpanetSimulator(wn)
+    results = sim.run_sim()
+    
+    p = results.node['pressure']['node2'] * 0.1 # в бары
+    f = results.link['flowrate']['p2'] * 1000  # в л/с
+    
+    # Добавляем шум для реализма
+    noise = np.random.normal(0, 0.015, len(p))
+    
+    return pd.DataFrame({
+        'Pressure (bar)': p.values + noise,
+        'Flow Rate (L/s)': np.abs(f.values) + (noise * 0.1),
+        'Leak Status': [0 if t < leak_hr*3600 else 1 for t in p.index]
+    })
+
+# --- 2. КОНФИГУРАЦИЯ ИНТЕРФЕЙСА ---
 st.set_page_config(page_title="Smart Shygyn PRO", page_icon="💧", layout="wide")
 
-# Функции (Telegram и EPANET) оставляем те же, что были раньше...
-# [Здесь должны быть функции send_telegram_msg и run_epanet_simulation]
-
-# --- SIDEBAR ---
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3145/3145024.png", width=100)
-st.sidebar.title("Smart Shygyn v2.0")
-city = st.sidebar.selectbox("📍 Город:", ["Алматы", "Астана", "Шымкент"])
+# --- 3. SIDEBAR ---
+st.sidebar.title("💧 Smart Shygyn v2.0")
+city = st.sidebar.selectbox("📍 Локация:", ["Алматы", "Астана", "Шымкент"])
 tariff = st.sidebar.slider("💰 Тариф (тг/литр):", 0.1, 1.5, 0.5)
-threshold = st.sidebar.slider("📉 Порог тревоги (Bar):", 1.0, 5.0, 2.8)
+threshold = st.sidebar.slider("📉 Порог тревоги (Bar):", 1.0, 5.0, 2.5)
 
-# --- ГЛАВНЫЙ ЭКРАН ---
-st.title(f"🏢 Система мониторинга водоснабжения: {city}")
+if st.sidebar.button("🚀 Запустить ИИ-симуляцию"):
+    st.session_state['data'] = run_epanet_simulation()
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Мониторинг", "📋 Данные", "💰 Экономика", "🛠 Тех-поддержка"])
+# --- 4. ОСНОВНОЙ БЛОК ---
+st.title(f"🏢 Мониторинг сети: {city}")
 
-# --- ЛОГИКА ЗАГРУЗКИ ---
 if 'data' not in st.session_state:
     st.session_state['data'] = None
-
-with st.sidebar:
-    if st.button("🚀 Запустить ИИ-симуляцию"):
-        # Тут вызываем нашу функцию с EPANET
-        st.session_state['data'] = run_epanet_simulation()
 
 df = st.session_state['data']
 
 if df is not None:
-    # Аналитика
-    df['Alert'] = df['Pressure (bar)'] < threshold
-    lost_vol = df[df['Alert'] == True]['Flow Rate (L/s)'].sum() * 3600
+    # Анализ на основе нашего ИИ-порога
+    df['AI_Alert'] = df['Pressure (bar)'] < threshold
+    total_leaks = int(df['AI_Alert'].sum())
     
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Мониторинг", "📋 Данные", "💰 Экономика", "🛠 Тех-аудит"])
+
     with tab1:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Текущее давление", f"{df['Pressure (bar)'].iloc[-1]:.2f} Bar")
-        c2.metric("Потери воды", f"{lost_vol:.1f} Л", delta=f"-{lost_vol*0.1:.1f}", delta_color="inverse")
-        c3.metric("Ущерб", f"{int(lost_vol * tariff)} ₸")
-        c4.metric("Статус", "🚩 КРИТИЧЕСКИ" if lost_vol > 0 else "✅ ОК")
+        status = "🔴 КРИТИЧЕСКИ" if total_leaks > 0 else "✅ НОРМА"
+        c1.metric("Статус", status)
         
-        st.subheader("Живой график потока и давления")
+        # Считаем потери только в моменты аномалий
+        lost_vol = df[df['AI_Alert'] == True]['Flow Rate (L/s)'].sum() * 3600
+        c2.metric("Потери воды", f"{lost_vol:.1f} л")
+        c3.metric("Убытки", f"{int(lost_vol * tariff)} ₸")
+        c4.metric("Давление (min)", f"{df['Pressure (bar)'].min():.2f} bar")
+
+        st.subheader("Анализ гидравлических показателей")
         st.line_chart(df[['Pressure (bar)', 'Flow Rate (L/s)']])
         
-        if lost_vol > 0:
-            st.error(f"Внимание! Обнаружена утечка. Давление упало ниже {threshold} Bar.")
-            if st.button("📢 Оповестить диспетчера"):
-                send_telegram_msg(f"Авария в {city}! Потери {lost_vol:.1f} л.")
+        if total_leaks > 0:
+            st.error("⚠️ Внимание! Обнаружена разгерметизация участка.")
+            if st.button("📲 Отправить отчет в Telegram"):
+                msg = f"🚨 АВАРИЯ: {city}\nПотери: {lost_vol:.1f}л\nУщерб: {int(lost_vol * tariff)}тг"
+                send_telegram_msg(msg)
 
     with tab2:
-        st.subheader("Сырые данные с сенсоров")
-        st.dataframe(df.style.highlight_max(axis=0, color='lightcoral'))
-        st.download_button("📥 Скачать CSV отчет", df.to_csv(), "report.csv")
+        st.dataframe(df.style.highlight_max(axis=0, subset=['Flow Rate (L/s)'], color='orange'))
+        st.download_button("📥 Экспорт в CSV", df.to_csv(), "report_shygyn.csv")
 
     with tab3:
-        st.subheader("Прогноз окупаемости системы")
-        col_a, col_b = st.columns(2)
-        daily_loss = lost_vol * 24
-        col_a.info(f"Прогноз потерь в сутки: {daily_loss:.0f} литров")
-        col_b.warning(f"Финансовый риск в месяц: {daily_loss * 30 * tariff:,.0f} ₸")
-        
-        # Маленький график прогноза
-        chart_data = pd.DataFrame(np.random.randn(20, 1), columns=['Прогноз экономии'])
-        st.area_chart(chart_data)
+        st.subheader("Прогноз потерь (30 дней)")
+        daily_loss_val = lost_vol * 24 if total_leaks > 0 else 0
+        st.info(f"При текущем состоянии сети риск потерь составляет {daily_loss_val * 30 * tariff:,.0f} ₸ в месяц.")
+        st.bar_chart(np.random.randint(100, 500, 30))
 
     with tab4:
-        st.subheader("Состояние оборудования")
-        st.write("✅ Датчик давления №041 - Активен")
-        st.write("✅ Радиомодуль LoRaWAN - Сигнал отличный")
-        st.write("⚠️ Требуется калибровка датчика потока через 14 дней")
+        st.write("🔧 **Диагностика узлов:**")
+        st.write("- Датчик давления (Node2): **Стабилен**")
+        st.write("- Шлюз LoRaWAN: **Подключен**")
+        st.write("- Последняя синхронизация: **Только что**")
 
 else:
-    st.warning("Нажмите кнопку в меню слева, чтобы получить данные из системы EPANET.")
+    st.info("👋 Добро пожаловать! Нажмите кнопку в боковом меню для запуска анализа сети.")
