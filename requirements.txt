@@ -2,3 +2,4 @@ streamlit
 pandas
 matplotlib
 wntr
+import plotly.express as px
