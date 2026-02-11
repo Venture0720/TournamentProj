@@ -21,35 +21,40 @@ def send_telegram_msg(text):
 
 # 2. Функция генерации данных через EPANET (WNTR)
 def run_epanet_simulation():
+    import random # Добавь это в импорты в самом верху
     wn = wntr.network.WaterNetworkModel()
-    # Создаем базовую сеть
-    wn.add_reservoir('res', base_head=30)
+    
+    # Рандомизируем параметры сети
+    start_pressure = random.uniform(25, 45) # Случайное давление от 2.5 до 4.5 бар
+    leak_start_hour = random.randint(8, 18) # Утечка начнется в случайный час
+    leak_size = random.uniform(0.03, 0.08)  # Случайный размер дырки
+    
+    wn.add_reservoir('res', base_head=start_pressure)
     wn.add_junction('node1', base_demand=0.005, elevation=10)
     wn.add_junction('node2', base_demand=0.005, elevation=10)
     wn.add_pipe('p1', 'res', 'node1', length=100, diameter=0.2, roughness=100)
     wn.add_pipe('p2', 'node1', 'node2', length=100, diameter=0.2, roughness=100)
     
-    # Настройка времени (24 часа)
     wn.options.time.duration = 24 * 3600
-    wn.options.time.report_timestep = 3600 # шаг 1 час
+    wn.options.time.report_timestep = 3600
     
-    # Моделируем утечку на node2 в середине дня
     node2 = wn.get_node('node2')
-    # Добавляем эмиттер (утечку) с 12-го часа
-    node2.add_leak(wn, area=0.05, start_time=12 * 3600)
+    # Утечка теперь начинается в случайное время и имеет разный масштаб
+    node2.add_leak(wn, area=leak_size, start_time=leak_start_hour * 3600)
     
-    # Симуляция
     sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim()
     
-    # Превращаем в таблицу
-    p = results.node['pressure']['node2'] * 0.1 # бар
-    f = results.link['flowrate']['p2'] * 1000  # л/с
+    p = results.node['pressure']['node2'] * 0.1
+    f = results.link['flowrate']['p2'] * 1000
+    
+    # Добавляем небольшой сенсорный шум (jitter), чтобы графики не были идеально гладкими
+    noise = np.random.normal(0, 0.02, len(p)) 
     
     data = pd.DataFrame({
-        'Pressure (bar)': p.values,
-        'Flow Rate (L/s)': np.abs(f.values),
-        'Leak Status': [0 if t < 12*3600 else 1 for t in p.index]
+        'Pressure (bar)': p.values + noise,
+        'Flow Rate (L/s)': np.abs(f.values) + (noise * 0.1),
+        'Leak Status': [0 if t < leak_start_hour*3600 else 1 for t in p.index]
     })
     return data
 
