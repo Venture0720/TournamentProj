@@ -1,5 +1,6 @@
 streamlit
 pandas
-matplotlib
+numpy
 wntr
-import plotly.express as px
+requests
+plotly
