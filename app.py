@@ -5,6 +5,38 @@ import wntr
 import requests
 import random
 
+# --- НОВЫЙ БЛОК: ЗАЩИТА И ПРЕДОБРАБОТКА ---
+
+def validate_and_clean_data(df):
+    """Проверяет данные на ошибки и исправляет их"""
+    required_columns = ['Pressure (bar)', 'Flow Rate (L/s)']
+    
+    # Проверка наличия колонок
+    for col in required_columns:
+        if col not in df.columns:
+            st.error(f"❌ В файле отсутствует важная колонка: {col}")
+            return None
+    
+    # Удаление пустых строк и исправление типов
+    df = df.dropna(subset=required_columns)
+    
+    # Защита от "выбросов" (например, если датчик глюканул и выдал 99999 бар)
+    df = df[df['Pressure (bar)'] < 100] 
+    
+    return df
+
+# --- ВСТАВИТЬ В ОСНОВНУЮ ЛОГИКУ ---
+
+if mode == "Загрузить CSV":
+    uploaded_file = st.file_uploader("Загрузите CSV", type="csv")
+    if uploaded_file:
+        try:
+            raw_df = pd.read_csv(uploaded_file)
+            df = validate_and_clean_data(raw_df) # Очистка данных
+            if df is not None:
+                st.session_state['data'] = df
+        except Exception as e:
+            st.error(f"Критическая ошибка при чтении файла: {e}")
 # --- 1. ФУНКЦИИ (Backend) ---
 
 def send_telegram_msg(text):
@@ -95,7 +127,12 @@ if df is not None:
         c4.metric("Давление (min)", f"{df['Pressure (bar)'].min():.2f} bar")
 
         st.subheader("Анализ гидравлических показателей")
-        st.line_chart(df[['Pressure (bar)', 'Flow Rate (L/s)']])
+        st.subheader("🌋 Тепловая карта рисков")
+fig = px.scatter(df, x=df.index, y="Pressure (bar)", 
+                 color="Pressure (bar)", 
+                 color_continuous_scale="RdYlGn", # От красного к зеленому
+                 title="Цветовая индикация давления")
+st.plotly_chart(fig, use_container_width=True)
         
         if total_leaks > 0:
             st.error("⚠️ Внимание! Обнаружена разгерметизация участка.")
