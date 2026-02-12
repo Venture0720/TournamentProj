@@ -5,7 +5,7 @@ import wntr
 import requests
 import random
 import plotly.express as px
-import matplotlib.pyplot as plt # 1. ДОБАВИЛИ ДЛЯ СХЕМЫ
+import matplotlib.pyplot as plt
 
 # --- 1. ФУНКЦИИ (Backend) ---
 
@@ -38,11 +38,17 @@ def run_epanet_simulation():
     start_p = random.uniform(28, 42)
     leak_hr = random.randint(10, 16)
     
-    # Создаем узлы с координатами для проекции
-    wn.add_reservoir('res', base_head=start_p, pos=(0, 5))
-    wn.add_junction('node1', base_demand=0.005, elevation=10, pos=(5, 5))
-    wn.add_junction('node2', base_demand=0.005, elevation=10, pos=(10, 5))
+    # 1. Сначала добавляем узлы
+    wn.add_reservoir('res', base_head=start_p)
+    wn.add_junction('node1', base_demand=0.005, elevation=10)
+    wn.add_junction('node2', base_demand=0.005, elevation=10)
     
+    # 2. Устанавливаем координаты ОТДЕЛЬНО (это исправит TypeError)
+    wn.set_node_coords('res', (0, 5))
+    wn.set_node_coords('node1', (5, 5))
+    wn.set_node_coords('node2', (10, 5))
+    
+    # 3. Добавляем трубы
     wn.add_pipe('p1', 'res', 'node1', length=100, diameter=0.2, roughness=100)
     wn.add_pipe('p2', 'node1', 'node2', length=100, diameter=0.2, roughness=100)
     
@@ -65,7 +71,7 @@ def run_epanet_simulation():
         'Leak Status': [0 if t < leak_hr*3600 else 1 for t in p.index]
     })
     
-    return df_res, wn # Теперь возвращаем и данные, и модель сети
+    return df_res, wn
 
 # --- 2. КОНФИГУРАЦИЯ ИНТЕРФЕЙСА ---
 st.set_page_config(page_title="Smart Shygyn PRO", page_icon="💧", layout="wide")
@@ -111,7 +117,7 @@ if df is not None:
         c3.metric("Убытки", f"{int(lost_vol * tariff)} ₸")
         c4.metric("Давление (min)", f"{df['Pressure (bar)'].min():.2f} bar")
 
-        st.subheader("🌋 Тепловая карта рисков")
+        st.subheader("🌋 Анализ давления по времени")
         fig = px.scatter(df, x=df.index, y="Pressure (bar)", 
                          color="Pressure (bar)", 
                          color_continuous_scale="RdYlGn")
@@ -135,20 +141,23 @@ if df is not None:
     with tab4:
         st.subheader("🗺 Проекция цифрового двойника сети")
         if wn:
-            # Визуализация сети EPANET
             fig_map, ax = plt.subplots(figsize=(10, 4))
             
-            # Если есть авария, красим узел node2 в красный
-            node_colors = {'res': 'blue', 'node1': 'green', 'node2': 'red' if is_leak else 'green'}
+            # Цвета узлов
+            node_colors = {}
+            for node_name in wn.node_name_list:
+                if node_name == 'res':
+                    node_colors[node_name] = 'blue'
+                elif node_name == 'node2' and is_leak:
+                    node_colors[node_name] = 'red'
+                else:
+                    node_colors[node_name] = 'green'
             
+            # Отрисовка
             wntr.graphics.plot_network(wn, node_map=node_colors, node_size=150, edge_width=3, ax=ax)
-            plt.title("Схема участка: Резервуар -> Магистраль -> Потребитель")
+            ax.set_title("Схема: Резервуар (синий) -> Узел 1 -> Узел 2 (место утечки)")
             st.pyplot(fig_map)
-            
-            if is_leak:
-                st.warning("📍 Локализация: Авария обнаружена на конечном узле (Node 2)")
         else:
-            st.info("Проекция доступна только в режиме EPANET симуляции")
-
+            st.info("Проекция доступна только после запуска EPANET симуляции.")
 else:
     st.info("👋 Выберите источник данных в боковом меню.")
