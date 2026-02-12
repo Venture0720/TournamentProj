@@ -4,7 +4,8 @@ import numpy as np
 import wntr
 import requests
 import random
-import plotly.express as px  # ДОБАВИЛИ ИМПОРТ
+import plotly.express as px
+import matplotlib.pyplot as plt # 1. ДОБАВИЛИ ДЛЯ СХЕМЫ
 
 # --- 1. ФУНКЦИИ (Backend) ---
 
@@ -36,32 +37,41 @@ def run_epanet_simulation():
     wn = wntr.network.WaterNetworkModel()
     start_p = random.uniform(28, 42)
     leak_hr = random.randint(10, 16)
-    wn.add_reservoir('res', base_head=start_p)
-    wn.add_junction('node1', base_demand=0.005, elevation=10)
-    wn.add_junction('node2', base_demand=0.005, elevation=10)
+    
+    # Создаем узлы с координатами для проекции
+    wn.add_reservoir('res', base_head=start_p, pos=(0, 5))
+    wn.add_junction('node1', base_demand=0.005, elevation=10, pos=(5, 5))
+    wn.add_junction('node2', base_demand=0.005, elevation=10, pos=(10, 5))
+    
     wn.add_pipe('p1', 'res', 'node1', length=100, diameter=0.2, roughness=100)
     wn.add_pipe('p2', 'node1', 'node2', length=100, diameter=0.2, roughness=100)
+    
     wn.options.time.duration = 24 * 3600
     wn.options.time.report_timestep = 3600
+    
     node2 = wn.get_node('node2')
     node2.add_leak(wn, area=0.05, start_time=leak_hr * 3600)
+    
     sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim()
+    
     p = results.node['pressure']['node2'] * 0.1
     f = results.link['flowrate']['p2'] * 1000
     noise = np.random.normal(0, 0.015, len(p))
-    return pd.DataFrame({
+    
+    df_res = pd.DataFrame({
         'Pressure (bar)': p.values + noise,
         'Flow Rate (L/s)': np.abs(f.values) + (noise * 0.1),
         'Leak Status': [0 if t < leak_hr*3600 else 1 for t in p.index]
     })
+    
+    return df_res, wn # Теперь возвращаем и данные, и модель сети
 
 # --- 2. КОНФИГУРАЦИЯ ИНТЕРФЕЙСА ---
 st.set_page_config(page_title="Smart Shygyn PRO", page_icon="💧", layout="wide")
 
 # --- 3. SIDEBAR ---
 st.sidebar.title("💧 Smart Shygyn v2.0")
-# ДОБАВИЛИ ВЫБОР РЕЖИМА
 mode = st.sidebar.radio("Режим данных:", ["Генератор EPANET", "Загрузить CSV"])
 city = st.sidebar.selectbox("📍 Локация:", ["Алматы", "Астана", "Шымкент"])
 tariff = st.sidebar.slider("💰 Тариф (тг/литр):", 0.1, 1.5, 0.5)
@@ -69,10 +79,13 @@ threshold = st.sidebar.slider("📉 Порог тревоги (Bar):", 1.0, 5.0,
 
 if 'data' not in st.session_state:
     st.session_state['data'] = None
+    st.session_state['network'] = None
 
 if mode == "Генератор EPANET":
     if st.sidebar.button("🚀 Запустить ИИ-симуляцию"):
-        st.session_state['data'] = run_epanet_simulation()
+        data, network = run_epanet_simulation()
+        st.session_state['data'] = data
+        st.session_state['network'] = network
 else:
     uploaded_file = st.sidebar.file_uploader("Загрузите CSV", type="csv")
     if uploaded_file:
@@ -82,6 +95,7 @@ else:
 # --- 4. ОСНОВНОЙ БЛОК ---
 st.title(f"🏢 Мониторинг сети: {city}")
 df = st.session_state['data']
+wn = st.session_state['network']
 
 if df is not None:
     df['AI_Alert'] = df['Pressure (bar)'] < threshold
@@ -90,21 +104,20 @@ if df is not None:
 
     with tab1:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Статус", "🔴 КРИТИЧЕСКИ" if total_leaks > 0 else "✅ НОРМА")
+        is_leak = total_leaks > 0
+        c1.metric("Статус", "🔴 КРИТИЧЕСКИ" if is_leak else "✅ НОРМА")
         lost_vol = df[df['AI_Alert'] == True]['Flow Rate (L/s)'].sum() * 3600
         c2.metric("Потери воды", f"{lost_vol:.1f} л")
         c3.metric("Убытки", f"{int(lost_vol * tariff)} ₸")
         c4.metric("Давление (min)", f"{df['Pressure (bar)'].min():.2f} bar")
 
-        st.subheader("🌋 Тепловая карта рисков (Pressure Analysis)")
-        # ИСПРАВИЛИ ОТСТУПЫ ПЛОТЛИ
+        st.subheader("🌋 Тепловая карта рисков")
         fig = px.scatter(df, x=df.index, y="Pressure (bar)", 
                          color="Pressure (bar)", 
-                         color_continuous_scale="RdYlGn",
-                         title="Цветовая индикация состояния узла")
+                         color_continuous_scale="RdYlGn")
         st.plotly_chart(fig, use_container_width=True)
         
-        if total_leaks > 0:
+        if is_leak:
             st.error("⚠️ Внимание! Обнаружена разгерметизация участка.")
             if st.button("📲 Отправить отчет в Telegram"):
                 msg = f"🚨 АВАРИЯ: {city}\nПотери: {lost_vol:.1f}л\nУщерб: {int(lost_vol * tariff)}тг"
@@ -112,18 +125,30 @@ if df is not None:
 
     with tab2:
         st.dataframe(df.style.highlight_max(axis=0, subset=['Flow Rate (L/s)'], color='orange'))
-        st.download_button("📥 Экспорт в CSV", df.to_csv(), "report_shygyn.csv")
 
     with tab3:
         st.subheader("Прогноз потерь (30 дней)")
         daily_loss_val = lost_vol * 24 if total_leaks > 0 else 0
-        st.info(f"При текущем состоянии сети риск потерь составляет {daily_loss_val * 30 * tariff:,.0f} ₸ в месяц.")
+        st.info(f"Риск потерь: {daily_loss_val * 30 * tariff:,.0f} ₸/мес")
         st.bar_chart(np.random.randint(100, 500, 30))
 
     with tab4:
-        st.write("🔧 **Диагностика узлов:**")
-        st.write("- Датчик давления (Node2): **Стабилен**")
-        st.write("- Шлюз LoRaWAN: **Подключен**")
-        st.write("- Режим работы: **Непрерывный мониторинг**")
+        st.subheader("🗺 Проекция цифрового двойника сети")
+        if wn:
+            # Визуализация сети EPANET
+            fig_map, ax = plt.subplots(figsize=(10, 4))
+            
+            # Если есть авария, красим узел node2 в красный
+            node_colors = {'res': 'blue', 'node1': 'green', 'node2': 'red' if is_leak else 'green'}
+            
+            wntr.graphics.plot_network(wn, node_map=node_colors, node_size=150, edge_width=3, ax=ax)
+            plt.title("Схема участка: Резервуар -> Магистраль -> Потребитель")
+            st.pyplot(fig_map)
+            
+            if is_leak:
+                st.warning("📍 Локализация: Авария обнаружена на конечном узле (Node 2)")
+        else:
+            st.info("Проекция доступна только в режиме EPANET симуляции")
+
 else:
-    st.info("👋 Добро пожаловать! Выберите источник данных в боковом меню.")
+    st.info("👋 Выберите источник данных в боковом меню.")
