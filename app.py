@@ -710,3 +710,27 @@ def create_nrw_pie(economics: Dict, dark_mode: bool) -> go.Figure:
     )
     
     return fig
+    import streamlit as st
+from backend import CityManager, HydraulicPhysics # Убедись, что импорты совпадают
+
+def main():
+    st.set_page_config(page_title="Smart Shygyn PRO", layout="wide")
+    
+    st.title("🌊 Smart Shygyn PRO v3")
+    
+    # 1. Инициализация данных (пример)
+    city_name = st.sidebar.selectbox("Выберите город", ["Алматы", "Астана", "Туркестан"])
+    city = CityManager(city_name)
+    
+    st.sidebar.info(city.config.description)
+    
+    # 2. Создание тестовых данных для визуализации (пока нет связи с реальным расчетом)
+    # Здесь должна быть логика запуска симуляции из backend.py
+    st.warning("Для полной работы необходимо вызвать симуляцию из backend.py и передать результаты в функции графиков.")
+    
+    # Пример вызова твоей функции графика (нужен DataFrame)
+    # chart = create_hydraulic_plot(df, threshold_bar=2.5, smart_pump=True, dark_mode=True)
+    # st.plotly_chart(chart, use_container_width=True)
+
+if __name__ == "__main__":
+    main()
