@@ -340,12 +340,20 @@ def create_heatmap_network(wn, df, degradation):
     nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax, 
                          edge_color='#95a5a6', width=3, alpha=0.5)
     
-    nodes = nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, 
-                         node_color=node_colors, node_size=600, 
-                         edgecolors='white', linewidths=2.5)
+    node_list = list(wn.node_name_list)
+    nodes = nx.draw_networkx_nodes(wn.get_graph(), pos, 
+                         nodelist=node_list,
+                         node_color=node_colors, 
+                         node_size=600, 
+                         edgecolors='white', 
+                         linewidths=2.5,
+                         ax=ax)
     
-    nx.draw_networkx_labels(wn.get_graph(), pos, ax=ax, 
-                          font_size=8, font_weight='bold')
+    nx.draw_networkx_labels(wn.get_graph(), pos, 
+                          labels={n: n for n in node_list},
+                          font_size=8, 
+                          font_weight='bold',
+                          ax=ax)
     
     # Легенда
     legend_elements = [
@@ -586,12 +594,22 @@ if st.session_state['data'] is not None:
                        color=color, linewidth=width, alpha=alpha, zorder=1)
             
             # Рисуем узлы
-            nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, 
-                                 node_color=n_colors, node_size=550, 
-                                 edgecolors='white', linewidths=2.5, zorder=2)
+            node_list = list(wn.node_name_list)
+            nx.draw_networkx_nodes(wn.get_graph(), pos, 
+                                 nodelist=node_list,
+                                 node_color=n_colors, 
+                                 node_size=550, 
+                                 edgecolors='white', 
+                                 linewidths=2.5, 
+                                 ax=ax,
+                                 zorder=2)
             
-            nx.draw_networkx_labels(wn.get_graph(), pos, ax=ax, 
-                                  font_size=8, font_weight='bold', zorder=3)
+            nx.draw_networkx_labels(wn.get_graph(), pos, 
+                                  labels={n: n for n in node_list},
+                                  font_size=8, 
+                                  font_weight='bold',
+                                  ax=ax,
+                                  zorder=3)
             
             # Легенда
             legend_elements = [
