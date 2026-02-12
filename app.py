@@ -408,8 +408,21 @@ with st.sidebar.expander("🔄 IoT интеграция", expanded=False):
     if uploaded_file is not None:
         try:
             csv_df = pd.read_csv(uploaded_file)
-            st.session_state['csv_data'] = csv_df
-            st.success(f"✅ Загружено {len(csv_df)} записей")
+            
+            # Normalize column names: strip whitespace
+            csv_df.columns = csv_df.columns.str.strip()
+            
+            # Check for required columns
+            required_cols = ['Hour', 'Pressure (bar)', 'Flow Rate (L/s)']
+            missing_cols = [col for col in required_cols if col not in csv_df.columns]
+            
+            if missing_cols:
+                st.error(f"❌ Отсутствуют обязательные колонки: {', '.join(missing_cols)}")
+                st.info(f"📋 Доступные колонки в файле: {', '.join(csv_df.columns.tolist())}")
+                st.warning("**Требуемый формат CSV:**\n- Hour\n- Pressure (bar)\n- Flow Rate (L/s)")
+            else:
+                st.session_state['csv_data'] = csv_df
+                st.success(f"✅ Загружено {len(csv_df)} записей")
         except Exception as e:
             st.error(f"❌ Ошибка: {str(e)}")
 
@@ -694,7 +707,7 @@ if st.session_state['data'] is not None:
             csv_df = st.session_state['csv_data']
             
             # Сравнение модели и реальных данных
-            if 'Pressure (bar)' in csv_df.columns and 'Flow Rate (L/s)' in csv_df.columns:
+            if 'Hour' in csv_df.columns and 'Pressure (bar)' in csv_df.columns and 'Flow Rate (L/s)' in csv_df.columns:
                 fig_compare = make_subplots(
                     rows=2, cols=1,
                     subplot_titles=('Сравнение давления', 'Сравнение расхода'),
