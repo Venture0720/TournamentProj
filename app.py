@@ -38,15 +38,16 @@ def run_epanet_simulation():
     start_p = random.uniform(28, 42)
     leak_hr = random.randint(10, 16)
     
-    # 1. Сначала добавляем узлы
-    wn.add_reservoir('res', base_head=start_p)
-    wn.add_junction('node1', base_demand=0.005, elevation=10)
-    wn.add_junction('node2', base_demand=0.005, elevation=10)
+    # 1. Добавляем узлы
+    res = wn.add_reservoir('res', base_head=start_p)
+    n1 = wn.add_junction('node1', base_demand=0.005, elevation=10)
+    n2 = wn.add_junction('node2', base_demand=0.005, elevation=10)
     
-    # 2. Устанавливаем координаты ОТДЕЛЬНО (это исправит TypeError)
-    wn.set_node_coords('res', (0, 5))
-    wn.set_node_coords('node1', (5, 5))
-    wn.set_node_coords('node2', (10, 5))
+    # 2. Устанавливаем координаты ЧЕРЕЗ АТРИБУТЫ (самый надежный способ)
+    # Это исправит AttributeError
+    wn.get_node('res').coordinates = (0, 5)
+    wn.get_node('node1').coordinates = (5, 5)
+    wn.get_node('node2').coordinates = (10, 5)
     
     # 3. Добавляем трубы
     wn.add_pipe('p1', 'res', 'node1', length=100, diameter=0.2, roughness=100)
@@ -55,6 +56,7 @@ def run_epanet_simulation():
     wn.options.time.duration = 24 * 3600
     wn.options.time.report_timestep = 3600
     
+    # Моделируем утечку
     node2 = wn.get_node('node2')
     node2.add_leak(wn, area=0.05, start_time=leak_hr * 3600)
     
