@@ -19,84 +19,29 @@ st.set_page_config(
 # --- CUSTOM CSS ---
 st.markdown("""
     <style>
-    /* Main background */
-    .main {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        background-attachment: fixed;
-    }
-    
-    /* Content area */
-    .block-container {
-        background-color: rgba(255, 255, 255, 0.95);
-        border-radius: 15px;
-        padding: 2rem;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-    }
-    
-    /* Metrics */
+    /* Metrics styling */
     [data-testid="stMetricValue"] {
-        font-size: 28px;
+        font-size: 24px;
         font-weight: 700;
     }
     
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
-    }
-    
-    [data-testid="stSidebar"] * {
-        color: white !important;
-    }
-    
-    /* Headers */
+    /* Make headers stand out */
     h1 {
-        color: #2c3e50;
-        font-weight: 800;
+        color: #1f77b4;
         text-align: center;
-        margin-bottom: 2rem;
+        padding: 20px 0;
     }
     
-    h2, h3 {
-        color: #34495e;
+    h3 {
+        color: #2c3e50;
+        border-bottom: 2px solid #3498db;
+        padding-bottom: 10px;
+        margin-top: 20px;
     }
     
-    /* Buttons */
-    .stButton button {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        font-weight: 600;
-        border: none;
-        border-radius: 10px;
-        padding: 0.75rem 2rem;
-        transition: all 0.3s ease;
-    }
-    
-    .stButton button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-    }
-    
-    /* Info boxes */
-    .stAlert {
-        border-radius: 10px;
-        border-left: 5px solid #667eea;
-    }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background-color: #f8f9fa;
-        border-radius: 8px 8px 0 0;
-        padding: 10px 20px;
-        font-weight: 600;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        color: white;
+    /* Improve dataframe appearance */
+    .dataframe {
+        font-size: 12px;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -279,11 +224,10 @@ if st.session_state['data'] is not None:
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        status = "🚨 УТЕЧКА" if active_leak else "✅ НОРМА"
-        status_color = "red" if active_leak else "green"
-        st.markdown(f"<div style='text-align: center; padding: 20px; background: white; border-radius: 10px; border-left: 5px solid {status_color};'>"
-                   f"<h4 style='margin:0; color: {status_color};'>{status}</h4>"
-                   f"<p style='margin:0; color: gray;'>Статус системы</p></div>", unsafe_allow_html=True)
+        if active_leak:
+            st.metric(label="Статус системы", value="🚨 УТЕЧКА", delta="Критично", delta_color="inverse")
+        else:
+            st.metric(label="Статус системы", value="✅ НОРМА", delta="Стабильно", delta_color="normal")
     
     with col2:
         min_pressure = df['Pressure (bar)'].min()
@@ -442,9 +386,8 @@ if st.session_state['data'] is not None:
 
 else:
     # Welcome screen
-    st.info("### 👋 Добро пожаловать в Smart Shygyn!\n\n"
-            "Настройте параметры системы в боковой панели и нажмите **'ЗАПУСТИТЬ СИМУЛЯЦИЮ'** "
-            "для начала мониторинга водопроводной сети.", icon="ℹ️")
+    st.markdown("### 👋 Добро пожаловать в Smart Shygyn!")
+    st.markdown("Настройте параметры системы в боковой панели и нажмите **'ЗАПУСТИТЬ СИМУЛЯЦИЮ'** для начала мониторинга.")
     
     st.markdown("---")
     
@@ -452,12 +395,18 @@ else:
     
     with col_w1:
         st.markdown("#### ⚙️ Настройка")
-        st.write("• Выберите материал труб\n• Укажите износ системы\n• Установите частоту датчиков")
+        st.markdown("- Выберите материал труб")
+        st.markdown("- Укажите износ системы")
+        st.markdown("- Установите частоту датчиков")
     
     with col_w2:
         st.markdown("#### 🚀 Симуляция")
-        st.write("• Цифровая модель сети\n• Реалистичная физика\n• Детекция утечек")
+        st.markdown("- Цифровая модель сети")
+        st.markdown("- Реалистичная физика")
+        st.markdown("- Детекция утечек")
     
     with col_w3:
         st.markdown("#### 📊 Анализ")
-        st.write("• Визуализация данных\n• Экономический расчет\n• Формирование отчетов")
+        st.markdown("- Визуализация данных")
+        st.markdown("- Экономический расчет")
+        st.markdown("- Формирование отчетов")
