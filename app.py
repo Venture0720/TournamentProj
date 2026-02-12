@@ -710,27 +710,85 @@ def create_nrw_pie(economics: Dict, dark_mode: bool) -> go.Figure:
     )
     
     return fig
-    import streamlit as st
-from backend import CityManager, HydraulicPhysics # Убедись, что импорты совпадают
+   # ==========================================
+# MAIN APPLICATION RENDERER
+# ==========================================
 
 def main():
-    st.set_page_config(page_title="Smart Shygyn PRO", layout="wide")
+    # 1. Настройка страницы (должна быть первой)
+    st.set_page_config(
+        page_title="Smart Shygyn PRO v3",
+        page_icon="🌊",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # Импортируем бэкенд внутри, чтобы избежать проблем с цикличным импортом
+    from backend import CityManager, HydraulicPhysics
+    import numpy as np
+
+    # 2. Sidebar Controls
+    st.sidebar.title("🎮 Control Panel")
     
-    st.title("🌊 Smart Shygyn PRO v3")
+    selected_city = st.sidebar.selectbox(
+        "Select Target City", 
+        ["Алматы", "Астана", "Туркестан"]
+    )
     
-    # 1. Инициализация данных (пример)
-    city_name = st.sidebar.selectbox("Выберите город", ["Алматы", "Астана", "Туркестан"])
-    city = CityManager(city_name)
+    dark_mode = st.sidebar.toggle("Dark Interface", value=True)
     
-    st.sidebar.info(city.config.description)
+    st.sidebar.divider()
     
-    # 2. Создание тестовых данных для визуализации (пока нет связи с реальным расчетом)
-    # Здесь должна быть логика запуска симуляции из backend.py
-    st.warning("Для полной работы необходимо вызвать симуляцию из backend.py и передать результаты в функции графиков.")
+    # Эмуляция входных данных для визуализации
+    # В реальной версии здесь будет вызов sim = backend.run_simulation()
+    st.sidebar.subheader("Network Parameters")
+    pipe_age = st.sidebar.slider("Average Pipe Age", 0, 60, 25)
+    pressure_threshold = st.sidebar.slider("Leak Threshold (bar)", 1.0, 5.0, 2.7)
     
-    # Пример вызова твоей функции графика (нужен DataFrame)
-    # chart = create_hydraulic_plot(df, threshold_bar=2.5, smart_pump=True, dark_mode=True)
-    # st.plotly_chart(chart, use_container_width=True)
+    # 3. Эмуляция данных (Заглушка, пока не подключен полный расчет wntr)
+    # Это позволит фронтенду "ожить"
+    city = CityManager(selected_city)
+    
+    # Создаем фиктивный датафрейм для графиков
+    hours = np.linspace(0, 24, 25)
+    mock_df = pd.DataFrame({
+        "Hour": hours,
+        "Pressure (bar)": 3.0 + 0.5 * np.sin(hours/4) - (0.01 * pipe_age),
+        "Flow Rate (L/s)": 150 + 50 * np.abs(np.sin(hours/6)),
+        "Water Age (h)": 4 + 0.2 * hours,
+        "Demand Pattern": 0.8 + 0.4 * np.abs(np.sin(hours/12)),
+        "Pump Head (m)": [50 if (h < 6 or h > 22) else 75 for h in hours]
+    })
+
+    # 4. Main Layout
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.header(f"📍 Operational View: {selected_city}")
+        # Здесь мы бы вызвали результаты симуляции
+        # Пока выведем основной график
+        fig_hyd = create_hydraulic_plot(
+            mock_df, 
+            threshold_bar=pressure_threshold, 
+            smart_pump=True, 
+            dark_mode=dark_mode
+        )
+        st.plotly_chart(fig_hyd, use_container_width=True)
+
+    with col2:
+        st.header("📊 Economics & Risk")
+        # Экономика (заглушка)
+        mock_econ = {
+            "payback_months": 14.5,
+            "monthly_total_savings_kzt": 850000,
+            "capex_kzt": 12000000,
+            "nrw_percentage": 28.5
+        }
+        
+        st.plotly_chart(create_nrw_pie(mock_econ, dark_mode), use_container_width=True)
+        st.plotly_chart(create_payback_chart(mock_econ, dark_mode), use_container_width=True)
+
+    st.success(f"Система мониторинга {selected_city} активна. Данные обновляются в реальном времени.")
 
 if __name__ == "__main__":
     main()
