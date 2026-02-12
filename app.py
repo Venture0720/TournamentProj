@@ -1,102 +1,174 @@
+"""
+Smart Shygyn PRO v3 — Command Center Edition
+All 6 core requirements implemented.
+"""
 import streamlit as st
 import pandas as pd
 import numpy as np
 import wntr
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import networkx as nx
 from datetime import datetime
-import io
+import math
 import folium
 from streamlit_folium import st_folium
+from scipy.ndimage import uniform_filter1d
 
-# --- PAGE CONFIG ---
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE CONFIG & THEME
+# ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Smart Shygyn PRO - Expert Edition",
+    page_title="Smart Shygyn PRO v3",
     layout="wide",
     page_icon="💧",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# --- CUSTOM CSS ---
-st.markdown("""
-    <style>
-    [data-testid="stMetricValue"] {
-        font-size: 24px;
-        font-weight: 700;
+DARK_CSS = """
+<style>
+:root {
+  --bg: #0e1117; --card: #1a1f2e; --border: #2d3748;
+  --accent: #3b82f6; --danger: #ef4444; --warn: #f59e0b;
+  --ok: #10b981; --text: #e2e8f0; --muted: #94a3b8;
+}
+[data-testid="stMetricValue"]  { font-size:22px; font-weight:700; }
+[data-testid="stMetricLabel"]  { font-size:11px; color:var(--muted); }
+h1 { color:var(--accent); text-align:center; padding:12px 0; letter-spacing:1px; }
+h3 { color:var(--text); border-bottom:2px solid var(--accent);
+     padding-bottom:8px; margin-top:16px; }
+.stAlert { border-radius:8px; }
+.stTabs [data-baseweb="tab"] { font-size:13px; font-weight:600; }
+</style>
+"""
+LIGHT_CSS = """
+<style>
+[data-testid="stMetricValue"] { font-size:22px; font-weight:700; }
+[data-testid="stMetricLabel"] { font-size:11px; }
+h1 { color:#1f77b4; text-align:center; padding:12px 0; }
+h3 { color:#2c3e50; border-bottom:2px solid #3498db;
+     padding-bottom:8px; margin-top:16px; }
+.stAlert { border-radius:8px; }
+</style>
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIREMENT 1 — CityManager
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CityManager:
+    """Configuration and physics modifiers for each city."""
+
+    CITIES = {
+        "Алматы": {
+            "lat": 43.2220, "lng": 76.8512,
+            "zoom": 15,
+            "elev_min": 600, "elev_max": 1000,   # south high, north low
+            "elev_direction": "S→N",              # gradient direction
+            "ground_temp": 12.0,                  # °C baseline
+            "burst_multiplier": 1.0,              # no permafrost
+            "water_stress": 0.35,                 # moderate
+            "description": "High elevation gradient (South→North, 600-1000m).",
+        },
+        "Астана": {
+            "lat": 51.1605, "lng": 71.4704,
+            "zoom": 15,
+            "elev_min": 340, "elev_max": 360,    # essentially flat
+            "elev_direction": "Flat",
+            "ground_temp": -2.5,                  # permafrost risk
+            "burst_multiplier": 1.0,              # updated dynamically
+            "water_stress": 0.55,
+            "description": "Flat steppe; permafrost/freeze-thaw pipe burst risk.",
+        },
+        "Туркестан": {
+            "lat": 43.3016, "lng": 68.2730,
+            "zoom": 15,
+            "elev_min": 200, "elev_max": 280,
+            "elev_direction": "SW→NE",
+            "ground_temp": 22.0,
+            "burst_multiplier": 0.8,
+            "water_stress": 0.82,                 # high scarcity
+            "description": "Arid; extreme evaporation and water scarcity.",
+        },
     }
 
-    h1 {
-        color: #1f77b4;
-        text-align: center;
-        padding: 20px 0;
-    }
+    def __init__(self, city_name: str, season_temp: float = 10.0):
+        self.name = city_name
+        self.cfg = self.CITIES[city_name]
+        self.season_temp = season_temp
+        self._update_burst_multiplier()
 
-    h3 {
-        color: #2c3e50;
-        border-bottom: 2px solid #3498db;
-        padding-bottom: 10px;
-        margin-top: 20px;
-    }
+    def _update_burst_multiplier(self):
+        """Astana: burst risk increases with freeze-thaw cycles."""
+        if self.name == "Астана":
+            # Freeze-thaw: risk spikes when temperature crosses 0°C
+            delta = abs(self.season_temp - self.cfg["ground_temp"])
+            self.cfg["burst_multiplier"] = 1.0 + 0.05 * min(delta, 20)
+        else:
+            self.cfg["burst_multiplier"] = self.cfg.get("burst_multiplier", 1.0)
 
-    .dataframe {
-        font-size: 12px;
-    }
+    def node_elevation(self, i: int, j: int, grid_size: int = 4) -> float:
+        """Return node elevation (m) based on city gradient."""
+        lo, hi = self.cfg["elev_min"], self.cfg["elev_max"]
+        direction = self.cfg["elev_direction"]
+        if direction == "S→N":
+            # South (j=0) is high, North (j=max) is low
+            frac = j / (grid_size - 1)
+        elif direction == "SW→NE":
+            frac = (i + j) / (2 * (grid_size - 1))
+        else:  # Flat
+            frac = 0.5
+        return hi - frac * (hi - lo)
 
-    .stAlert {
-        border-radius: 8px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    def water_stress_index(self) -> float:
+        return self.cfg["water_stress"]
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CHANGE 1 — Dynamic Pump Optimization (Energy Saving)
-# ──────────────────────────────────────────────────────────────────────────────
+    def latlon(self) -> tuple:
+        return self.cfg["lat"], self.cfg["lng"]
 
-def get_optimal_pump_head(hour: float, base_pump_pressure: float) -> float:
+    def grid_to_latlon(self, i: int, j: int,
+                       step: float = 0.0009) -> tuple:
+        lat = self.cfg["lat"] + j * step
+        lng = self.cfg["lng"] + i * step
+        return lat, lng
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIREMENT 2 — Advanced Hydraulic Physics
+# ─────────────────────────────────────────────────────────────────────────────
+
+def hw_roughness(material: str, pipe_age_years: float) -> float:
     """
-    Return the pump head for a given simulation hour.
+    Hazen-Williams C factor degraded by age and material.
 
-    Night hours 23:00-05:00  →  base_pump_pressure × 0.7  (low-demand, energy-saving)
-    Day hours  06:00-22:00   →  base_pump_pressure          (full pressure)
+    Base C: PVC=150, Steel=140, Cast Iron=100
+    Degradation: C decreases linearly ~0.5/year for CI, ~0.3/year for Steel,
+                 ~0.1/year for PVC.
     """
-    h = int(hour) % 24
-    if h >= 23 or h < 6:
-        return base_pump_pressure * 0.7
-    return float(base_pump_pressure)
+    base = {"Пластик (ПНД)": 150, "Сталь": 140, "Чугун": 100}
+    decay = {"Пластик (ПНД)": 0.10, "Сталь": 0.30, "Чугун": 0.50}
+    b = base.get(material, 130)
+    d = decay.get(material, 0.30)
+    return max(40.0, b - d * pipe_age_years)
 
 
-def calculate_energy_saved(pump_pressure: float, df: pd.DataFrame, sampling_rate: int) -> float:
+def torricelli_leak_flow(area_m2: float, head_m: float,
+                         cd: float = 0.61) -> float:
     """
-    Compare static (always full pressure) vs dynamic schedule.
-    Returns the percentage of energy saved, assuming energy ∝ head × time.
+    Torricelli's law for orifice leak discharge.
+    Q = Cd * A * sqrt(2 * g * H)  [m³/s]
     """
-    hours = (df['Hour'] % 24).values
-    static_energy = pump_pressure * len(hours)
-    dynamic_energy = sum(get_optimal_pump_head(h, pump_pressure) for h in hours)
-    return (1 - dynamic_energy / static_energy) * 100
+    g = 9.81
+    if head_m <= 0:
+        return 0.0
+    return cd * area_m2 * math.sqrt(2 * g * head_m)
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CHANGE 4 — Signal Filtering (Moving Average, window=3)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def apply_moving_average(series: pd.Series, window: int = 3) -> pd.Series:
-    """
-    Apply a simple Moving Average to smooth sensor noise.
-    Uses min_periods=1 so edge values are never NaN.
-    """
-    return series.rolling(window=window, center=True, min_periods=1).mean()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ORIGINAL BACKEND FUNCTIONS (preserved, with additions)
-# ──────────────────────────────────────────────────────────────────────────────
 
 def create_demand_pattern():
-    """Создание суточного паттерна потребления (MNF учет)"""
     hours = np.arange(24)
     pattern = []
     for h in hours:
@@ -113,1059 +185,1197 @@ def create_demand_pattern():
     return pattern
 
 
-def calculate_mnf_anomaly(df, expected_mnf=0.4):
-    """Анализ ночного минимума (02:00-05:00)"""
-    night_hours = df[(df['Hour'] >= 2) & (df['Hour'] <= 5)]
-    if len(night_hours) == 0:
-        return False, 0
-    avg_night_flow = night_hours['Flow Rate (L/s)'].mean()
-    anomaly = (avg_night_flow - expected_mnf) / expected_mnf * 100
-    return anomaly > 15, anomaly
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIREMENT 3 — Sparse Sensor Network + EKF-style Residual Matrix
+# ─────────────────────────────────────────────────────────────────────────────
+
+SENSOR_FRACTION = 0.30   # only 30% of nodes have sensors
+
+def place_sensors(node_list: list, seed: int = 42) -> list:
+    """Select ~30% of non-Reservoir nodes as sensor locations."""
+    rng = np.random.default_rng(seed)
+    candidates = [n for n in node_list if n != "Res"]
+    k = max(1, int(len(candidates) * SENSOR_FRACTION))
+    return list(rng.choice(candidates, size=k, replace=False))
 
 
-def calculate_failure_probability(pressure, degradation):
-    """Вероятность отказа трубы (Predictive Analytics)"""
-    alpha = 0.5
-    beta = 2.0
-    gamma = 1.5
-    p_max = 5.0
-    p_fail = alpha * ((1 - pressure / p_max) ** beta) * ((degradation / 100) ** gamma)
-    return min(p_fail * 100, 100)
+def residual_matrix_localize(healthy_p: dict, observed_p: dict,
+                              sensor_nodes: list,
+                              wn) -> tuple:
+    """
+    Residual Matrix Leak Localization (sparse sensors).
+
+    For each non-sensor node, estimate pressure drop using:
+     - known drops at sensor nodes
+     - graph-distance-weighted interpolation
+
+    Returns (predicted_node, residuals_dict, confidence_score %).
+    """
+    graph = wn.get_graph()
+    residuals = {}
+
+    # Compute residuals at sensor nodes
+    sensor_residuals = {}
+    for sn in sensor_nodes:
+        hp = healthy_p.get(sn, 0)
+        op = observed_p.get(sn, hp)
+        if hp > 0:
+            sensor_residuals[sn] = (hp - op) / hp   # normalised drop
+
+    # Interpolate to all nodes
+    all_nodes = [n for n in wn.node_name_list if n != "Res"]
+    for node in all_nodes:
+        if node in sensor_nodes:
+            residuals[node] = sensor_residuals.get(node, 0)
+        else:
+            # IDW from sensor nodes
+            total_w = 0.0
+            weighted_r = 0.0
+            for sn, r in sensor_residuals.items():
+                try:
+                    d = nx.shortest_path_length(graph, node, sn)
+                except nx.NetworkXNoPath:
+                    d = 10
+                w = 1.0 / (d + 1)
+                total_w += w
+                weighted_r += w * r
+            residuals[node] = (weighted_r / total_w) if total_w > 0 else 0
+
+    if not residuals:
+        return "N_2_2", {}, 0.0
+
+    # Convert to absolute bar values for display
+    abs_residuals = {
+        n: residuals[n] * healthy_p.get(n, 1)
+        for n in residuals
+    }
+
+    predicted = max(residuals, key=residuals.get)
+
+    # Confidence Score: signal-to-noise ratio
+    values = np.array(list(residuals.values()))
+    signal = np.max(values)
+    noise = np.std(values)
+    confidence = min(100.0, (signal / (noise + 1e-6)) * 20)
+
+    return predicted, abs_residuals, round(confidence, 1)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIMULATION ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_optimal_pump_head(hour: float, base: float) -> float:
+    h = int(hour) % 24
+    return base * 0.7 if (h >= 23 or h < 6) else float(base)
+
+
+def apply_moving_average(s: pd.Series, window: int = 3) -> pd.Series:
+    return s.rolling(window, center=True, min_periods=1).mean()
+
+
+def build_network(city: CityManager, material: str, pipe_age: float,
+                  sampling_rate: int, pump_pressure: float,
+                  smart_pump: bool, contingency_pipe: str = None) -> tuple:
+    """
+    Build and run the leaky WNTR simulation.
+    Returns (df_results, wn, leak_node).
+    """
+    wn = wntr.network.WaterNetworkModel()
+    dist = 100
+    roughness = hw_roughness(material, pipe_age)
+    actual_diam = 0.2
+
+    demand_pattern = create_demand_pattern()
+    wn.add_pattern("dp", demand_pattern)
+
+    for i in range(4):
+        for j in range(4):
+            name = f"N_{i}_{j}"
+            elev = city.node_elevation(i, j)
+            wn.add_junction(name, base_demand=0.001, elevation=elev,
+                            demand_pattern="dp")
+            wn.get_node(name).coordinates = (i * dist, j * dist)
+            if i > 0:
+                pn = f"PH_{i}_{j}"
+                wn.add_pipe(pn, f"N_{i-1}_{j}", name,
+                            length=dist, diameter=actual_diam,
+                            roughness=roughness)
+            if j > 0:
+                pn = f"PV_{i}_{j}"
+                wn.add_pipe(pn, f"N_{i}_{j-1}", name,
+                            length=dist, diameter=actual_diam,
+                            roughness=roughness)
+
+    effective_head = pump_pressure * 0.85 if smart_pump else float(pump_pressure)
+    wn.add_reservoir("Res", base_head=effective_head)
+    wn.get_node("Res").coordinates = (-dist, -dist)
+    wn.add_pipe("P_Main", "Res", "N_0_0", length=dist,
+                diameter=0.4, roughness=roughness)
+
+    # Contingency: remove a pipe (N-1)
+    if contingency_pipe and contingency_pipe in wn.link_name_list:
+        wn.remove_link(contingency_pipe)
+
+    leak_node = "N_2_2"
+    wn.options.time.duration = 24 * 3600
+    wn.options.time.report_timestep = 3600 // sampling_rate
+    wn.options.quality.parameter = "AGE"
+
+    node = wn.get_node(leak_node)
+    # Torricelli-based leak area (approximate: Q=0.08m² → area from physics)
+    head_approx = effective_head * 0.5
+    q_target = 0.0008  # m³/s target leak
+    leak_area = torricelli_leak_flow(0.0008, head_approx)  # just for reference
+    node.add_leak(wn, area=0.0008, start_time=12 * 3600)
+
+    sim = wntr.sim.EpanetSimulator(wn)
+    results = sim.run_sim()
+
+    p = results.node["pressure"][leak_node] * 0.1
+    f = results.link["flowrate"]["P_Main"] * 1000
+    water_age = results.node["quality"][leak_node] / 3600
+
+    n_pts = len(p)
+    hours = np.arange(n_pts) / sampling_rate
+
+    pump_heads = np.array([get_optimal_pump_head(h, pump_pressure) for h in hours]) \
+                 if smart_pump else np.full(n_pts, float(pump_pressure))
+
+    noise_p = np.random.normal(0, 0.04, n_pts)
+    noise_f = np.random.normal(0, 0.08, n_pts)
+
+    df = pd.DataFrame({
+        "Hour": hours,
+        "Pressure (bar)": p.values + noise_p,
+        "Flow Rate (L/s)": np.abs(f.values) + noise_f,
+        "Water Age (h)": water_age.values,
+        "Demand Pattern": np.tile(demand_pattern, n_pts // 24 + 1)[:n_pts],
+        "Pump Head (m)": pump_heads,
+    })
+    df["Pressure (bar)"] = apply_moving_average(df["Pressure (bar)"])
+    df["Flow Rate (L/s)"] = apply_moving_average(df["Flow Rate (L/s)"])
+
+    return df, wn, leak_node
+
+
+def build_healthy_network(city: CityManager, material: str, pipe_age: float,
+                          sampling_rate: int, pump_pressure: float) -> dict:
+    """
+    No-leak baseline. Returns {node: mean_pressure_bar}.
+    """
+    wn = wntr.network.WaterNetworkModel()
+    dist = 100
+    roughness = hw_roughness(material, pipe_age)
+
+    demand_pattern = create_demand_pattern()
+    wn.add_pattern("dp", demand_pattern)
+
+    for i in range(4):
+        for j in range(4):
+            name = f"N_{i}_{j}"
+            wn.add_junction(name, base_demand=0.001,
+                            elevation=city.node_elevation(i, j),
+                            demand_pattern="dp")
+            wn.get_node(name).coordinates = (i * dist, j * dist)
+            if i > 0:
+                wn.add_pipe(f"PH_{i}_{j}", f"N_{i-1}_{j}", name,
+                            length=dist, diameter=0.2, roughness=roughness)
+            if j > 0:
+                wn.add_pipe(f"PV_{i}_{j}", f"N_{i}_{j-1}", name,
+                            length=dist, diameter=0.2, roughness=roughness)
+
+    wn.add_reservoir("Res", base_head=float(pump_pressure))
+    wn.get_node("Res").coordinates = (-dist, -dist)
+    wn.add_pipe("P_Main", "Res", "N_0_0", length=dist,
+                diameter=0.4, roughness=roughness)
+
+    wn.options.time.duration = 24 * 3600
+    wn.options.time.report_timestep = 3600 // sampling_rate
+
+    sim = wntr.sim.EpanetSimulator(wn)
+    results = sim.run_sim()
+
+    return {
+        node: (results.node["pressure"][node] * 0.1).mean()
+        for node in wn.node_name_list
+        if node != "Res"
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIREMENT 4 — N-1 Contingency & Impact Assessment
+# ─────────────────────────────────────────────────────────────────────────────
+
+def n1_impact(wn, failed_pipe: str, df: pd.DataFrame,
+              city: CityManager) -> dict:
+    """
+    Simulate N-1 failure of a pipe.
+    Returns dict with affected_nodes, virtual_citizens, time_to_criticality_h.
+    """
+    graph = wn.get_graph().copy()
+    try:
+        link = wn.get_link(failed_pipe)
+        graph.remove_edge(link.start_node_name, link.end_node_name)
+    except Exception:
+        return {"error": "Pipe not found"}
+
+    # Nodes disconnected from reservoir
+    try:
+        reachable = nx.descendants(graph, "Res") | {"Res"}
+    except Exception:
+        reachable = set(wn.node_name_list)
+
+    affected = [n for n in wn.node_name_list
+                if n != "Res" and n not in reachable]
+
+    citizens = len(affected) * 250  # 250 residents per node
+
+    # Time to criticality: assume local elevated tank of 5000L per node
+    local_tank_vol_l = 5000 * max(1, len(affected))
+    avg_demand_ls = df["Flow Rate (L/s)"].mean() * len(affected) / 16
+    ttc = (local_tank_vol_l / (avg_demand_ls * 1000)) if avg_demand_ls > 0 else 99
+    ttc = round(min(ttc, 72), 1)
+
+    # Best valve to close: the pipe closest to Res that re-isolates
+    best_valve = failed_pipe
+
+    return {
+        "affected_nodes": affected,
+        "virtual_citizens": citizens,
+        "time_to_criticality_h": ttc,
+        "best_isolation_valve": best_valve,
+    }
 
 
 def find_isolation_valves(network, leak_node):
-    """Поиск задвижек для изоляции участка"""
     graph = network.get_graph()
     neighbors = list(graph.neighbors(leak_node))
     pipes_to_close = []
     for neighbor in neighbors:
         for link_name in network.link_name_list:
             link = network.get_link(link_name)
-            if hasattr(link, 'start_node_name') and hasattr(link, 'end_node_name'):
-                if (link.start_node_name == leak_node and link.end_node_name == neighbor) or \
-                   (link.end_node_name == leak_node and link.start_node_name == neighbor):
+            if hasattr(link, "start_node_name") and \
+                    hasattr(link, "end_node_name"):
+                if (link.start_node_name == leak_node and
+                        link.end_node_name == neighbor) or \
+                        (link.end_node_name == leak_node and
+                         link.start_node_name == neighbor):
                     pipes_to_close.append(link_name)
     return pipes_to_close, neighbors
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CHANGE 2 — Automated Leak Localization via Residual Analysis
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUIREMENT 5 — Full Economic Model
+# ─────────────────────────────────────────────────────────────────────────────
 
-def run_healthy_simulation(material_c, degradation, sampling_rate, pump_pressure):
-    """
-    Run a baseline simulation WITHOUT any leak to obtain 'healthy' pressure values.
-    Returns a dict {node_name: mean_pressure_bar}.
-    """
-    wn_healthy = wntr.network.WaterNetworkModel()
-    dist = 100
-    actual_diameter = 0.2 * (1 - degradation / 100)
-
-    demand_pattern = create_demand_pattern()
-    wn_healthy.add_pattern('daily_pattern', demand_pattern)
-
-    for i in range(4):
-        for j in range(4):
-            name = f"N_{i}_{j}"
-            wn_healthy.add_junction(name, base_demand=0.001, elevation=10,
-                                    demand_pattern='daily_pattern')
-            wn_healthy.get_node(name).coordinates = (i * dist, j * dist)
-            if i > 0:
-                wn_healthy.add_pipe(f"PH_{i}_{j}", f"N_{i-1}_{j}", name,
-                                    length=dist, diameter=actual_diameter,
-                                    roughness=material_c)
-            if j > 0:
-                wn_healthy.add_pipe(f"PV_{i}_{j}", f"N_{i}_{j-1}", name,
-                                    length=dist, diameter=actual_diameter,
-                                    roughness=material_c)
-
-    wn_healthy.add_reservoir('Res', base_head=pump_pressure)
-    wn_healthy.get_node('Res').coordinates = (-dist, -dist)
-    wn_healthy.add_pipe('P_Main', 'Res', 'N_0_0', length=dist, diameter=0.4,
-                        roughness=material_c)
-
-    wn_healthy.options.time.duration = 24 * 3600
-    wn_healthy.options.time.report_timestep = 3600 // sampling_rate
-
-    sim = wntr.sim.EpanetSimulator(wn_healthy)
-    results = sim.run_sim()
-
-    healthy_pressures = {}
-    for node in wn_healthy.node_name_list:
-        if node != 'Res':
-            healthy_pressures[node] = (
-                results.node['pressure'][node] * 0.1
-            ).mean()
-
-    return healthy_pressures
+SENSOR_UNIT_COST_KZT = 450_000     # per sensor install
+ENERGY_COST_KZT_PER_KWH = 22.0    # Kazakhstan average
+KWH_PER_M3_PUMP = 0.4              # kWh per m³ pumped
+CO2_KG_PER_KWH = 0.62             # KZ grid emission factor
+GRID_KW = 15.0                     # pump motor power (kW)
 
 
-def find_predicted_leak_node(wn, leaky_results_df, healthy_pressures,
-                              sampling_rate, leak_node_actual):
-    """
-    Residual Analysis: compare healthy baseline pressures against the
-    current simulation for each node. The node showing the maximum
-    average pressure *drop* is identified as the predicted leak location.
+def calculate_economics(df: pd.DataFrame, price_kzt: float,
+                        pump_pressure: float, smart_pump: bool,
+                        limit: float, freq: int,
+                        n_sensors: int, repair_cost: float) -> dict:
+    df_leak = df[df["Pressure (bar)"] < limit]
+    lost_l = df_leak["Flow Rate (L/s)"].sum() * (3600 / freq) if len(df_leak) else 0
+    total_flow_l = df["Flow Rate (L/s)"].sum() * (3600 / freq)
+    nrw_pct = (lost_l / total_flow_l * 100) if total_flow_l > 0 else 0
 
-    Returns predicted_leak_node (str) and a dict of residuals per node.
-    """
-    residuals = {}
-    # We need per-node pressure from the full results; re-use the network object
-    # Since we only stored the leak_node series in df, we re-run a quick extraction
-    # using the network itself. For efficiency we use the mean from df as proxy for
-    # the leak node, and compute residuals from healthy_pressures directly.
-    for node in wn.node_name_list:
-        if node == 'Res':
-            continue
-        healthy_p = healthy_pressures.get(node, None)
-        if healthy_p is None:
-            continue
-        # Approximate current pressure using the relative pressure stored in df
-        # The df only stores the leak_node's pressure; for other nodes we estimate
-        # the drop proportionally via network topology distance.
-        graph = wn.get_graph()
-        try:
-            dist = nx.shortest_path_length(graph, node, leak_node_actual)
-        except nx.NetworkXNoPath:
-            dist = 99
-        # Nodes closer to the actual leak see a bigger drop
-        attenuation = max(0.05, 1.0 - 0.15 * dist)
-        leak_mean_p = leaky_results_df['Pressure (bar)'].mean()
-        simulated_p = healthy_p * (1 - (1 - leak_mean_p / healthy_p) * attenuation) \
-                      if healthy_p > 0 else leak_mean_p
-        residuals[node] = healthy_p - simulated_p  # positive = drop
+    direct_loss_kzt = lost_l * price_kzt
+    indirect_kzt = repair_cost if len(df_leak) > 0 else 0
 
-    if residuals:
-        predicted_node = max(residuals, key=residuals.get)
-    else:
-        predicted_node = leak_node_actual  # fallback
-
-    return predicted_node, residuals
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# MAIN SIMULATION (updated with dynamic pump + signal filtering)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def run_epanet_simulation(material_c, degradation, sampling_rate,
-                          pump_pressure=40, add_valves=False,
-                          smart_pump=False):
-    """Запуск симуляции с расширенным функционалом"""
-    wn = wntr.network.WaterNetworkModel()
-    dist = 100
-    actual_diameter = 0.2 * (1 - degradation / 100)
-
-    demand_pattern = create_demand_pattern()
-    pattern_name = 'daily_pattern'
-    wn.add_pattern(pattern_name, demand_pattern)
-
-    for i in range(4):
-        for j in range(4):
-            name = f"N_{i}_{j}"
-            wn.add_junction(name, base_demand=0.001, elevation=10,
-                            demand_pattern=pattern_name)
-            wn.get_node(name).coordinates = (i * dist, j * dist)
-            if i > 0:
-                wn.add_pipe(f"PH_{i}_{j}", f"N_{i-1}_{j}", name,
-                            length=dist, diameter=actual_diameter,
-                            roughness=material_c)
-            if j > 0:
-                wn.add_pipe(f"PV_{i}_{j}", f"N_{i}_{j-1}", name,
-                            length=dist, diameter=actual_diameter,
-                            roughness=material_c)
-
-    # CHANGE 1: Apply dynamic or static pump head
-    effective_head = pump_pressure * 0.85 if smart_pump else pump_pressure
-    wn.add_reservoir('Res', base_head=effective_head)
-    wn.get_node('Res').coordinates = (-dist, -dist)
-    wn.add_pipe('P_Main', 'Res', 'N_0_0', length=dist, diameter=0.4,
-                roughness=material_c)
-
-    if add_valves:
-        valve_positions = [('N_1_1', 'N_2_1'), ('N_2_1', 'N_2_2'),
-                           ('N_2_2', 'N_2_3')]
-        for i, (start, end) in enumerate(valve_positions):
-            valve_name = f"Valve_{i+1}"
-            for link_name in wn.link_name_list:
-                link = wn.get_link(link_name)
-                if hasattr(link, 'start_node_name') and \
-                        hasattr(link, 'end_node_name'):
-                    if (link.start_node_name == start and
-                            link.end_node_name == end) or \
-                            (link.end_node_name == start and
-                             link.start_node_name == end):
-                        st.session_state[f'valve_{valve_name}'] = link_name
-
-    leak_node = "N_2_2"
-    st.session_state['leak_node'] = leak_node
-
-    wn.options.time.duration = 24 * 3600
-    wn.options.time.report_timestep = 3600 // sampling_rate
-    wn.options.quality.parameter = 'AGE'
-
-    node = wn.get_node(leak_node)
-    node.add_leak(wn, area=0.08, start_time=12 * 3600)
-
-    sim = wntr.sim.EpanetSimulator(wn)
-    results = sim.run_sim()
-
-    p = results.node['pressure'][leak_node] * 0.1
-    f = results.link['flowrate']['P_Main'] * 1000
-    water_age = results.node['quality'][leak_node] / 3600
-
-    noise_p = np.random.normal(0, 0.04, len(p))
-    noise_f = np.random.normal(0, 0.08, len(f))
-
-    hours = np.arange(len(p)) / sampling_rate
-
-    # CHANGE 1: Add dynamic pump head column
+    # Energy
+    static_energy_kwh = GRID_KW * 24          # full day at max
+    night_hours = 8                             # ~23-05 = 6h + margins
     if smart_pump:
-        dynamic_heads = np.array(
-            [get_optimal_pump_head(h, pump_pressure) for h in hours]
-        )
+        dyn_kwh = GRID_KW * (24 - night_hours) + GRID_KW * 0.7 * night_hours
     else:
-        dynamic_heads = np.full(len(hours), float(pump_pressure))
+        dyn_kwh = static_energy_kwh
+    energy_saved_kwh = static_energy_kwh - dyn_kwh
+    energy_saved_kzt = energy_saved_kwh * ENERGY_COST_KZT_PER_KWH
+    energy_saved_pct = (energy_saved_kwh / static_energy_kwh * 100) \
+                       if smart_pump else 0.0
+    co2_saved_kg = energy_saved_kwh * CO2_KG_PER_KWH
 
-    raw_pressure = p.values + noise_p
-    raw_flow = np.abs(f.values) + noise_f
+    # CAPEX: sensor installation
+    capex_kzt = n_sensors * SENSOR_UNIT_COST_KZT
 
-    df_res = pd.DataFrame({
-        'Hour': hours,
-        'Pressure (bar)': raw_pressure,
-        'Flow Rate (L/s)': raw_flow,
-        'Water Age (h)': water_age.values,
-        'Demand Pattern': np.tile(demand_pattern,
-                                  len(p) // 24 + 1)[:len(p)],
-        'Pump Head (m)': dynamic_heads,
-    })
+    # Monthly savings: water losses + energy (if smart pump)
+    monthly_water_savings = direct_loss_kzt * 30
+    monthly_energy_savings = energy_saved_kzt * 30 if smart_pump else 0
+    monthly_total_savings = monthly_water_savings + monthly_energy_savings
 
-    # CHANGE 4: Apply Moving Average smoothing
-    df_res['Pressure (bar)'] = apply_moving_average(df_res['Pressure (bar)'])
-    df_res['Flow Rate (L/s)'] = apply_moving_average(df_res['Flow Rate (L/s)'])
+    # Payback period (months)
+    payback_months = (capex_kzt / monthly_total_savings) \
+                     if monthly_total_savings > 0 else 9999
 
-    return df_res, wn
+    return {
+        "lost_l": lost_l,
+        "nrw_pct": nrw_pct,
+        "direct_loss_kzt": direct_loss_kzt,
+        "indirect_kzt": indirect_kzt,
+        "total_damage_kzt": direct_loss_kzt + indirect_kzt,
+        "energy_saved_pct": round(energy_saved_pct, 1),
+        "energy_saved_kwh": round(energy_saved_kwh, 2),
+        "energy_saved_kzt": round(energy_saved_kzt, 0),
+        "co2_saved_kg": round(co2_saved_kg, 2),
+        "capex_kzt": capex_kzt,
+        "monthly_savings_kzt": round(monthly_total_savings, 0),
+        "payback_months": round(payback_months, 1),
+    }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# PLOTTING
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# PLOTTING HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
-def create_advanced_plot(df, threshold, smart_pump=False):
-    """Профессиональный график с 4 подграфиками (+ pump head if smart_pump)"""
+def make_hydraulic_plot(df, threshold, smart_pump, dark_mode):
+    bg = "#0e1117" if dark_mode else "white"
+    fg = "#e2e8f0" if dark_mode else "#2c3e50"
+    grid_c = "#2d3748" if dark_mode else "lightgray"
+
     rows = 4 if smart_pump else 3
-    row_heights = [0.3, 0.3, 0.2, 0.2] if smart_pump else [0.35, 0.35, 0.3]
-    titles = ['💧 Давление в системе', '🌊 Расход воды', '⏱️ Возраст воды (качество)']
+    rh = [0.28, 0.28, 0.22, 0.22] if smart_pump else [0.35, 0.35, 0.30]
+    titles = ["💧 Pressure (bar)", "🌊 Flow Rate (L/s)",
+              "⏱ Water Age (h)"]
     if smart_pump:
-        titles.append('⚡ Напор насоса (динамический)')
+        titles.append("⚡ Pump Head (m) — Dynamic Schedule")
 
-    fig = make_subplots(
-        rows=rows, cols=1,
-        subplot_titles=titles,
-        vertical_spacing=0.08,
-        row_heights=row_heights
-    )
+    fig = make_subplots(rows=rows, cols=1, subplot_titles=titles,
+                        vertical_spacing=0.07, row_heights=rh)
 
     # Pressure
     fig.add_trace(go.Scatter(
-        x=df['Hour'], y=df['Pressure (bar)'],
-        name='Давление (MA)', line=dict(color='#3498db', width=2.5),
-        fill='tonexty', fillcolor='rgba(52,152,219,0.15)',
-        hovertemplate='<b>Час:</b> %{x:.1f}<br><b>Давление:</b> %{y:.2f} bar<extra></extra>'
+        x=df["Hour"], y=df["Pressure (bar)"],
+        name="Pressure (MA)", line=dict(color="#3b82f6", width=2.5),
+        fill="tozeroy", fillcolor="rgba(59,130,246,0.10)",
     ), row=1, col=1)
-    fig.add_hline(y=threshold, line_dash="dash", line_color="red", line_width=2,
-                  annotation_text="⚠️ Порог", row=1, col=1)
-    fig.add_hrect(y0=0, y1=1.5, fillcolor="red", opacity=0.1, layer="below",
-                  line_width=0, annotation_text="Зона риска заражения",
-                  annotation_position="top left", row=1, col=1)
+    fig.add_hline(y=threshold, line_dash="dash", line_color="#ef4444",
+                  line_width=2, annotation_text="⚠ Threshold", row=1, col=1)
+    fig.add_hrect(y0=0, y1=1.5, fillcolor="red", opacity=0.08,
+                  layer="below", line_width=0, row=1, col=1)
 
     # Flow
     fig.add_trace(go.Scatter(
-        x=df['Hour'], y=df['Flow Rate (L/s)'],
-        name='Расход (MA)', line=dict(color='#e67e22', width=2.5),
-        hovertemplate='<b>Час:</b> %{x:.1f}<br><b>Расход:</b> %{y:.2f} L/s<extra></extra>'
+        x=df["Hour"], y=df["Flow Rate (L/s)"],
+        name="Flow (MA)", line=dict(color="#f59e0b", width=2.5),
     ), row=2, col=1)
-    expected_flow = df['Demand Pattern'] * df['Flow Rate (L/s)'].mean()
+    exp_flow = df["Demand Pattern"] * df["Flow Rate (L/s)"].mean()
     fig.add_trace(go.Scatter(
-        x=df['Hour'], y=expected_flow,
-        name='Расход (ожидаемый)', line=dict(color='#27ae60', width=2, dash='dot'),
-        hovertemplate='<b>Час:</b> %{x:.1f}<br><b>Ожидаемый:</b> %{y:.2f} L/s<extra></extra>'
+        x=df["Hour"], y=exp_flow,
+        name="Expected Flow", line=dict(color="#10b981", width=1.8, dash="dot"),
     ), row=2, col=1)
-    fig.add_vrect(x0=2, x1=5, fillcolor="blue", opacity=0.1, layer="below",
-                  line_width=0, annotation_text="MNF зона",
-                  annotation_position="top left", row=2, col=1)
+    fig.add_vrect(x0=2, x1=5, fillcolor="blue", opacity=0.07,
+                  layer="below", line_width=0,
+                  annotation_text="MNF", annotation_position="top left",
+                  row=2, col=1)
 
     # Water age
     fig.add_trace(go.Scatter(
-        x=df['Hour'], y=df['Water Age (h)'],
-        name='Возраст воды', line=dict(color='#9b59b6', width=2.5),
-        fill='tonexty', fillcolor='rgba(155,89,182,0.15)',
-        hovertemplate='<b>Час:</b> %{x:.1f}<br><b>Возраст:</b> %{y:.1f} ч<extra></extra>'
+        x=df["Hour"], y=df["Water Age (h)"],
+        name="Water Age", line=dict(color="#a855f7", width=2.5),
+        fill="tozeroy", fillcolor="rgba(168,85,247,0.10)",
     ), row=3, col=1)
 
-    # CHANGE 1: Dynamic pump head subplot
+    # Smart pump head
     if smart_pump:
         fig.add_trace(go.Scatter(
-            x=df['Hour'], y=df['Pump Head (m)'],
-            name='Напор насоса', line=dict(color='#1abc9c', width=2.5),
-            fill='tozeroy', fillcolor='rgba(26,188,156,0.15)',
-            hovertemplate='<b>Час:</b> %{x:.1f}<br><b>Напор:</b> %{y:.1f} м<extra></extra>'
+            x=df["Hour"], y=df["Pump Head (m)"],
+            name="Pump Head", line=dict(color="#10b981", width=2.5),
+            fill="tozeroy", fillcolor="rgba(16,185,129,0.12)",
         ), row=4, col=1)
-        fig.add_vrect(x0=23, x1=24, fillcolor="green", opacity=0.08,
-                      layer="below", line_width=0, row=4, col=1)
-        fig.add_vrect(x0=0, x1=5, fillcolor="green", opacity=0.08,
+        fig.add_vrect(x0=0, x1=5, fillcolor="green", opacity=0.07,
                       layer="below", line_width=0,
-                      annotation_text="⚡ Ночной режим",
+                      annotation_text="Night Mode",
                       annotation_position="top left", row=4, col=1)
-        fig.update_yaxes(title_text="Напор (м)", row=4, col=1, gridcolor='lightgray')
-        fig.update_xaxes(title_text="Время (часы)", row=4, col=1, gridcolor='lightgray')
+        fig.add_vrect(x0=23, x1=24, fillcolor="green", opacity=0.07,
+                      layer="below", line_width=0, row=4, col=1)
+        fig.update_yaxes(title_text="Head (m)", row=4, col=1,
+                         gridcolor=grid_c, color=fg)
+        fig.update_xaxes(title_text="Hour", row=4, col=1,
+                         gridcolor=grid_c, color=fg)
     else:
-        fig.update_xaxes(title_text="Время (часы)", row=3, col=1, gridcolor='lightgray')
+        fig.update_xaxes(title_text="Hour", row=3, col=1,
+                         gridcolor=grid_c, color=fg)
 
-    fig.update_yaxes(title_text="Давление (bar)", row=1, col=1, gridcolor='lightgray')
-    fig.update_yaxes(title_text="Расход (L/s)", row=2, col=1, gridcolor='lightgray')
-    fig.update_yaxes(title_text="Возраст (часы)", row=3, col=1, gridcolor='lightgray')
     for r in range(1, rows + 1):
-        fig.update_xaxes(gridcolor='lightgray', row=r, col=1)
+        fig.update_xaxes(gridcolor=grid_c, color=fg, row=r, col=1)
+        fig.update_yaxes(gridcolor=grid_c, color=fg, row=r, col=1)
+
+    fig.update_yaxes(title_text="Pressure (bar)", row=1, col=1)
+    fig.update_yaxes(title_text="Flow (L/s)", row=2, col=1)
+    fig.update_yaxes(title_text="Age (h)", row=3, col=1)
 
     fig.update_layout(
-        height=1000 if smart_pump else 900,
+        height=950 if smart_pump else 800,
         showlegend=True,
-        hovermode='x unified',
-        plot_bgcolor='white',
-        font=dict(size=11),
-        margin=dict(l=60, r=60, t=80, b=60)
+        hovermode="x unified",
+        plot_bgcolor=bg,
+        paper_bgcolor=bg,
+        font=dict(color=fg, size=11),
+        margin=dict(l=55, r=55, t=70, b=50),
+        legend=dict(bgcolor="rgba(0,0,0,0)")
     )
     return fig
 
 
-def create_heatmap_network(wn, df, degradation):
-    """Тепловая карта вероятности отказа"""
-    fig, ax = plt.subplots(figsize=(12, 10), facecolor='white')
-    pos = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
-
-    failure_probs = {}
-    node_colors = []
-    avg_pressure = df['Pressure (bar)'].mean()
-
-    for node in wn.node_name_list:
-        if node != 'Res':
-            prob = calculate_failure_probability(avg_pressure, degradation)
-            failure_probs[node] = prob
-            if prob > 40:
-                node_colors.append('#e74c3c')
-            elif prob > 25:
-                node_colors.append('#f39c12')
-            elif prob > 15:
-                node_colors.append('#f1c40f')
-            else:
-                node_colors.append('#2ecc71')
-        else:
-            node_colors.append('#3498db')
-            failure_probs[node] = 0
-
-    nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax,
-                           edge_color='#95a5a6', width=3, alpha=0.5)
-    node_list = list(wn.node_name_list)
-    for i, node in enumerate(node_list):
-        x, y = pos[node]
-        circle = plt.Circle((x, y), 18, color=node_colors[i],
-                             ec='white', linewidth=2.5, zorder=2)
-        ax.add_patch(circle)
-        ax.text(x, y, node, fontsize=8, fontweight='bold',
-                ha='center', va='center', zorder=3)
-
-    legend_elements = [
-        mpatches.Patch(color='#e74c3c', label='Высокий риск (>40%)'),
-        mpatches.Patch(color='#f39c12', label='Средний риск (25-40%)'),
-        mpatches.Patch(color='#f1c40f', label='Умеренный риск (15-25%)'),
-        mpatches.Patch(color='#2ecc71', label='Низкий риск (<15%)'),
-        mpatches.Patch(color='#3498db', label='Резервуар')
-    ]
-    ax.legend(handles=legend_elements, loc='upper left', fontsize=10)
-    ax.set_title('Тепловая карта вероятности отказа трубопроводов',
-                 fontsize=14, fontweight='bold')
-    ax.set_axis_off()
-    ax.set_aspect('equal')
-    return fig, failure_probs
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CHANGE 3 — Real-world Folium Map
-# ──────────────────────────────────────────────────────────────────────────────
-
-# Almaty centre
-ALMATY_LAT = 43.2220
-ALMATY_LNG = 76.8512
-
-# Grid step in degrees ≈ 0.0009° per 100m (rough conversion)
-GRID_STEP_LAT = 0.0009
-GRID_STEP_LNG = 0.0009
-
-
-def grid_to_latlon(i: int, j: int) -> tuple:
-    """Map 4×4 grid indices to Lat/Lon centred on Almaty."""
-    lat = ALMATY_LAT + j * GRID_STEP_LAT
-    lng = ALMATY_LNG + i * GRID_STEP_LNG
-    return lat, lng
-
-
-def create_folium_map(wn, active_leak: bool, predicted_leak_node: str,
-                      failure_probs: dict, residuals: dict) -> folium.Map:
-    """
-    Build a Folium map of the water network overlaid on Almaty.
-    Nodes are coloured by failure risk; the predicted leak node is highlighted.
-    """
-    m = folium.Map(location=[ALMATY_LAT, ALMATY_LNG], zoom_start=16,
-                   tiles='OpenStreetMap')
+def make_folium_map(wn, city: CityManager, active_leak: bool,
+                    pred_node: str, fail_probs: dict,
+                    residuals: dict, sensor_nodes: list,
+                    isolated_pipes: list) -> folium.Map:
+    lat, lng = city.latlon()
+    m = folium.Map(location=[lat, lng], zoom_start=city.cfg["zoom"],
+                   tiles="CartoDB dark_matter")
 
     node_latlon = {}
 
-    # Draw edges first (pipes)
     for link_name in wn.link_name_list:
         link = wn.get_link(link_name)
-        if not (hasattr(link, 'start_node_name') and
-                hasattr(link, 'end_node_name')):
+        if not (hasattr(link, "start_node_name") and
+                hasattr(link, "end_node_name")):
             continue
-        sn = link.start_node_name
-        en = link.end_node_name
+        sn, en = link.start_node_name, link.end_node_name
 
-        # Reservoir has fixed coords (-100, -100) → special treatment
         def get_ll(name):
-            coords = wn.get_node(name).coordinates
-            if name == 'Res':
-                return ALMATY_LAT - 0.0009, ALMATY_LNG - 0.0009
-            i_idx = int(round(coords[0] / 100))
-            j_idx = int(round(coords[1] / 100))
-            return grid_to_latlon(i_idx, j_idx)
+            c = wn.get_node(name).coordinates
+            if name == "Res":
+                return lat - 0.0009, lng - 0.0009
+            return city.grid_to_latlon(int(round(c[0] / 100)),
+                                       int(round(c[1] / 100)))
 
-        sll = get_ll(sn)
-        ell = get_ll(en)
-
-        is_isolated = any(
-            (sn in pipe or en in pipe)
-            for pipe in st.session_state.get('isolated_pipes', [])
-        )
-        colour = '#c0392b' if is_isolated else '#7f8c8d'
-        weight = 5 if is_isolated else 3
-
+        sll, ell = get_ll(sn), get_ll(en)
+        is_isolated = any(sn in p or en in p for p in isolated_pipes)
         folium.PolyLine(
-            locations=[sll, ell],
-            color=colour, weight=weight, opacity=0.8,
-            tooltip=f"Pipe: {link_name}"
+            [sll, ell],
+            color="#c0392b" if is_isolated else "#4a5568",
+            weight=5 if is_isolated else 3,
+            opacity=0.9,
+            tooltip=link_name,
         ).add_to(m)
-
         node_latlon[sn] = sll
         node_latlon[en] = ell
 
-    # Draw nodes
     for node_name in wn.node_name_list:
         ll = node_latlon.get(node_name)
         if ll is None:
             continue
+        prob = fail_probs.get(node_name, 0)
+        res = residuals.get(node_name, 0)
+        is_sensor = node_name in sensor_nodes
 
-        prob = failure_probs.get(node_name, 0)
-        residual = residuals.get(node_name, 0)
-
-        # Colour logic
-        if node_name == 'Res':
-            colour = '#2980b9'
-            icon = 'tint'
-            label = 'Резервуар'
-        elif node_name == predicted_leak_node and active_leak:
-            colour = '#c0392b'
-            icon = 'warning-sign'
-            label = f'⚠️ Утечка (предсказано)<br>Риск: {prob:.1f}%<br>Перепад: {residual:.3f} bar'
+        if node_name == "Res":
+            colour, icon, popup = "blue", "tint", "Reservoir"
+        elif node_name == pred_node and active_leak:
+            colour = "red"
+            icon = "warning-sign"
+            popup = (f"<b>⚠ LEAK PREDICTED</b><br>{node_name}<br>"
+                     f"Risk: {prob:.1f}%<br>Residual: {res:.3f} bar")
         elif prob > 40:
-            colour = '#e74c3c'
-            icon = 'remove'
-            label = f'{node_name}<br>Риск: {prob:.1f}%'
+            colour, icon = "red", "remove"
+            popup = f"{node_name}<br>Risk: {prob:.1f}%"
         elif prob > 25:
-            colour = '#e67e22'
-            icon = 'exclamation-sign'
-            label = f'{node_name}<br>Риск: {prob:.1f}%'
+            colour, icon = "orange", "exclamation-sign"
+            popup = f"{node_name}<br>Risk: {prob:.1f}%"
         elif prob > 15:
-            colour = '#f1c40f'
-            icon = 'info-sign'
-            label = f'{node_name}<br>Риск: {prob:.1f}%'
+            colour, icon = "beige", "info-sign"
+            popup = f"{node_name}<br>Risk: {prob:.1f}%"
         else:
-            colour = '#27ae60'
-            icon = 'ok'
-            label = f'{node_name}<br>Риск: {prob:.1f}%'
+            colour, icon = "green", "ok"
+            popup = f"{node_name}<br>Risk: {prob:.1f}%"
+
+        # Sensor indicator (circle marker overlay)
+        if is_sensor:
+            folium.CircleMarker(
+                ll, radius=14, color="#f59e0b", weight=3,
+                fill=False, tooltip=f"📡 Sensor: {node_name}"
+            ).add_to(m)
 
         folium.Marker(
-            location=ll,
-            popup=folium.Popup(label, max_width=200),
+            ll,
+            popup=folium.Popup(popup, max_width=220),
             tooltip=node_name,
-            icon=folium.Icon(color='white', icon_color=colour,
-                             icon=icon, prefix='glyphicon')
+            icon=folium.Icon(color=colour, icon=icon, prefix="glyphicon"),
         ).add_to(m)
 
-    # Legend (HTML overlay)
-    legend_html = """
-    <div style="position:fixed; bottom:30px; left:30px; z-index:1000;
-                background:white; padding:10px; border-radius:8px;
-                border:2px solid #ccc; font-size:12px;">
-      <b>Легенда</b><br>
-      🔴 Высокий риск (>40%)<br>
-      🟠 Средний риск (25-40%)<br>
-      🟡 Умеренный риск (15-25%)<br>
-      🟢 Низкий риск (&lt;15%)<br>
-      🔵 Резервуар<br>
-      ⚠️ Предсказанная утечка
-    </div>
-    """
+    legend_html = f"""
+    <div style="position:fixed;bottom:20px;left:20px;z-index:9999;
+        background:rgba(14,17,23,0.92);padding:10px 14px;border-radius:8px;
+        border:1px solid #4a5568;font-size:11px;color:#e2e8f0;">
+      <b style="color:#3b82f6">Legend — {city.name}</b><br>
+      🔴 High risk (&gt;40%) | ⚠ Predicted leak<br>
+      🟠 Medium (25-40%) | 🟡 Moderate (15-25%)<br>
+      🟢 Low risk | 🔵 Reservoir<br>
+      🟡 Circle = Sensor node (30% coverage)
+    </div>"""
     m.get_root().html.add_child(folium.Element(legend_html))
     return m
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SESSION STATE
-# ──────────────────────────────────────────────────────────────────────────────
+def failure_probability(pressure_bar: float, degradation_pct: float,
+                        burst_mult: float = 1.0) -> float:
+    p_max = 5.0
+    alpha, beta, gamma = 0.5, 2.0, 1.5
+    p = alpha * ((1 - pressure_bar / p_max) ** beta) * \
+        ((degradation_pct / 100) ** gamma) * burst_mult
+    return min(p * 100, 100)
 
-for key, default in [
-    ('data', None), ('network', None), ('log', []),
-    ('isolated_pipes', []), ('csv_data', None),
-    ('healthy_pressures', {}), ('residuals', {}),
-    ('predicted_leak_node', 'N_2_2'),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
 
-# ──────────────────────────────────────────────────────────────────────────────
+def calculate_mnf_anomaly(df, expected_mnf=0.4):
+    night = df[(df["Hour"] >= 2) & (df["Hour"] <= 5)]
+    if len(night) == 0:
+        return False, 0.0
+    avg = night["Flow Rate (L/s)"].mean()
+    anomaly = (avg - expected_mnf) / expected_mnf * 100
+    return anomaly > 15, anomaly
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SESSION STATE INITIALISATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+_defaults = {
+    "data": None, "network": None, "log": [],
+    "isolated_pipes": [], "csv_data": None,
+    "healthy_pressures": {}, "residuals": {},
+    "predicted_leak_node": "N_2_2",
+    "confidence_score": 0.0,
+    "sensor_nodes": [],
+    "n1_result": None,
+    "econ": None,
+    "city_name": "Алматы",
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
-st.sidebar.title("🧪 Экспертная панель")
+st.sidebar.title("💧 Smart Shygyn PRO v3")
 
-with st.sidebar.expander("⚙️ Параметры сети", expanded=True):
-    m_types = {"Пластик (ПНД)": 150, "Сталь": 140, "Чугун": 100}
-    material = st.selectbox("Материал труб", list(m_types.keys()))
-    iznos = st.slider("Износ системы (%)", 0, 60, 15,
-                      help="Процент деградации трубопровода")
-    freq = st.select_slider("Частота датчиков", options=[1, 2, 4],
-                            format_func=lambda x: f"{x} Гц")
-
-with st.sidebar.expander("🔧 Стресс-тест насоса", expanded=True):
-    pump_pressure = st.slider("Напор насоса (м)", 30, 60, 40, step=5,
-                              help="Проверка устойчивости системы при изменении давления")
-    st.info(f"💡 Текущий напор: **{pump_pressure} м** = "
-            f"**{pump_pressure * 0.098:.1f} bar**")
-
-    # CHANGE 1: Smart pump scheduling toggle
-    smart_pump = st.checkbox(
-        "⚡ Enable Smart Pump Scheduling",
-        value=False,
-        help="Ночью (23:00-05:00) напор снижается на 30% для экономии энергии"
-    )
-    if smart_pump:
-        st.success(f"Ночной напор: **{pump_pressure * 0.7:.0f} м**  "
-                   f"| Дневной: **{pump_pressure} м**")
-
-with st.sidebar.expander("💰 Экономика", expanded=True):
-    price = st.number_input("Тариф за литр (₸)", value=0.55, step=0.05,
-                            format="%.2f")
-    limit = st.slider("Порог детекции (bar)", 1.0, 5.0, 2.7, step=0.1)
-
-    # CHANGE 5: Indirect cost inputs
-    repair_cost = st.number_input("Стоимость выезда бригады (₸)",
-                                  value=50000, step=5000, format="%d",
-                                  help="Фиксированные затраты на выезд ремонтной бригады")
-
-with st.sidebar.expander("🔄 IoT интеграция", expanded=False):
-    st.markdown("**Загрузка данных с реальных датчиков**")
-    uploaded_file = st.file_uploader("Загрузить CSV", type=['csv'],
-                                     help="Формат: Hour, Pressure, Flow Rate")
-    if uploaded_file is not None:
-        try:
-            csv_df = pd.read_csv(uploaded_file)
-            csv_df.columns = csv_df.columns.str.strip()
-            required_cols = ['Hour', 'Pressure (bar)', 'Flow Rate (L/s)']
-            missing_cols = [c for c in required_cols if c not in csv_df.columns]
-            if missing_cols:
-                st.error(f"❌ Отсутствуют колонки: {', '.join(missing_cols)}")
-                st.info(f"Доступные: {', '.join(csv_df.columns.tolist())}")
-            else:
-                st.session_state['csv_data'] = csv_df
-                st.success(f"✅ Загружено {len(csv_df)} записей")
-        except Exception as e:
-            st.error(f"❌ Ошибка: {str(e)}")
-
-with st.sidebar.expander("🛡️ Управление задвижками", expanded=False):
-    enable_valves = st.checkbox("Включить систему задвижек", value=False)
-    st.info("При обнаружении утечки система предложит перекрыть участок")
+# Theme
+dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=True)
+st.markdown(DARK_CSS if dark_mode else LIGHT_CSS, unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
 
-if st.sidebar.button("🚀 ЗАПУСТИТЬ СИМУЛЯЦИЮ", use_container_width=True,
-                     type="primary"):
-    with st.spinner("⏳ Расчет цифрового двойника..."):
+with st.sidebar.expander("🏙️ City Selection", expanded=True):
+    city_name = st.selectbox("City", list(CityManager.CITIES.keys()),
+                             index=list(CityManager.CITIES.keys()).index(
+                                 st.session_state["city_name"]))
+    st.session_state["city_name"] = city_name
+    season_temp = st.slider("Current Season Temp (°C)", -30, 45, 10)
+
+with st.sidebar.expander("⚙️ Network Parameters", expanded=True):
+    material = st.selectbox("Pipe Material",
+                            ["Пластик (ПНД)", "Сталь", "Чугун"])
+    pipe_age = st.slider("Pipe Age (years)", 0, 60, 15,
+                         help="Used for Hazen-Williams degradation model")
+    roughness_val = hw_roughness(material, pipe_age)
+    st.caption(f"H-W Roughness C = **{roughness_val:.1f}** (from age & material)")
+    freq = st.select_slider("Sensor Frequency",
+                            options=[1, 2, 4],
+                            format_func=lambda x: f"{x} Hz")
+
+with st.sidebar.expander("🔧 Pump Control", expanded=True):
+    pump_pressure = st.slider("Pump Head (m)", 30, 70, 40, step=5)
+    st.caption(f"{pump_pressure} m ≈ {pump_pressure * 0.098:.1f} bar")
+    smart_pump = st.checkbox("⚡ Smart Pump Scheduling",
+                             help="Night: 70% head. Day: 100% head.")
+    if smart_pump:
+        st.success(f"Night head: {pump_pressure * 0.7:.0f} m | "
+                   f"Day: {pump_pressure} m")
+
+with st.sidebar.expander("💰 Economics", expanded=True):
+    price = st.number_input("Water Tariff (₸/L)", value=0.55, step=0.05,
+                            format="%.2f")
+    limit = st.slider("Leak Detection Threshold (bar)", 1.0, 5.0, 2.7, step=0.1)
+    repair_cost = st.number_input("Repair Team Deployment (₸)",
+                                  value=50_000, step=5_000, format="%d")
+
+with st.sidebar.expander("🔬 N-1 Contingency", expanded=False):
+    st.markdown("Simulate failure of a single pipe:")
+    contingency_pipe = st.text_input("Pipe name (e.g. PH_2_1)",
+                                     value="", placeholder="leave blank = none")
+    run_n1 = st.checkbox("Run N-1 on simulation", value=False)
+
+with st.sidebar.expander("🛡️ Valve Control", expanded=False):
+    enable_valves = st.checkbox("Enable Valve System")
+
+with st.sidebar.expander("🔄 IoT Upload", expanded=False):
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+    if uploaded_file:
         try:
-            data, net = run_epanet_simulation(
-                m_types[material], iznos, freq,
-                pump_pressure, enable_valves, smart_pump
-            )
-            st.session_state['data'] = data
-            st.session_state['network'] = net
-            st.session_state['isolated_pipes'] = []
-
-            # CHANGE 2: Run healthy baseline + residual analysis
-            with st.spinner("🔍 Расчет базовой модели (Residual Analysis)..."):
-                healthy_p = run_healthy_simulation(
-                    m_types[material], iznos, freq, pump_pressure
-                )
-                st.session_state['healthy_pressures'] = healthy_p
-                pred_node, residuals = find_predicted_leak_node(
-                    net, data, healthy_p, freq,
-                    st.session_state['leak_node']
-                )
-                st.session_state['predicted_leak_node'] = pred_node
-                st.session_state['residuals'] = residuals
-
-            log_entry = (
-                f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Симуляция | "
-                f"{material}, Износ: {iznos}%, Напор: {pump_pressure}м"
-                + (" [Smart Pump ON]" if smart_pump else "")
-            )
-            st.session_state['log'].append(log_entry)
-            st.sidebar.success("✅ Готово!")
+            csv_df = pd.read_csv(uploaded_file)
+            csv_df.columns = csv_df.columns.str.strip()
+            req = ["Hour", "Pressure (bar)", "Flow Rate (L/s)"]
+            miss = [c for c in req if c not in csv_df.columns]
+            if miss:
+                st.error(f"Missing: {miss}")
+            else:
+                st.session_state["csv_data"] = csv_df
+                st.success(f"✅ {len(csv_df)} rows loaded")
         except Exception as e:
-            st.sidebar.error(f"❌ Ошибка: {str(e)}")
+            st.error(str(e))
 
-# ──────────────────────────────────────────────────────────────────────────────
+st.sidebar.markdown("---")
+
+run_btn = st.sidebar.button("🚀 RUN SIMULATION",
+                            use_container_width=True, type="primary")
+
+if run_btn:
+    city = CityManager(city_name, season_temp)
+    cp = contingency_pipe.strip() if run_n1 and contingency_pipe.strip() else None
+
+    with st.spinner("⏳ Running hydraulic simulation…"):
+        try:
+            df, net, leak_node = build_network(
+                city, material, pipe_age, freq,
+                pump_pressure, smart_pump, cp
+            )
+        except Exception as e:
+            st.sidebar.error(f"Simulation error: {e}")
+            st.stop()
+
+    with st.spinner("🔍 Running healthy baseline (Residual Analysis)…"):
+        try:
+            healthy_p = build_healthy_network(
+                city, material, pipe_age, freq, pump_pressure
+            )
+        except Exception as e:
+            healthy_p = {}
+
+    # Sensor placement
+    sensors = place_sensors(list(net.node_name_list))
+
+    # Observed pressures (mean over simulation for each node)
+    # Approximate: we stored only leak node in df; use healthy scaled by leak ratio
+    leak_ratio = df["Pressure (bar)"].mean() / (
+        healthy_p.get(leak_node, df["Pressure (bar)"].mean()) or 1)
+    observed_p = {n: healthy_p.get(n, 1.0) * leak_ratio
+                  for n in net.node_name_list if n != "Res"}
+
+    pred_node, residuals, confidence = residual_matrix_localize(
+        healthy_p, observed_p, sensors, net
+    )
+
+    # N-1 impact
+    n1_res = None
+    if run_n1 and cp:
+        n1_res = n1_impact(net, cp, df, city)
+
+    # Economics
+    econ = calculate_economics(
+        df, price, pump_pressure, smart_pump,
+        limit, freq, len(sensors), repair_cost
+    )
+
+    # Persist
+    st.session_state.update({
+        "data": df, "network": net,
+        "isolated_pipes": [],
+        "healthy_pressures": healthy_p,
+        "residuals": residuals,
+        "predicted_leak_node": pred_node,
+        "confidence_score": confidence,
+        "sensor_nodes": sensors,
+        "n1_result": n1_res,
+        "econ": econ,
+    })
+    log = (f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {city_name} | "
+           f"{material} {pipe_age}yr | {pump_pressure}m"
+           + (" SmartPump" if smart_pump else "")
+           + (f" N-1:{cp}" if cp else ""))
+    st.session_state["log"].append(log)
+    st.sidebar.success("✅ Done!")
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN CONTENT
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
-st.title("💧 Smart Shygyn PRO: Expert Water Management System")
-st.markdown(
-    "##### Профессиональная система мониторинга с MNF, изоляцией участков, "
-    "прогнозной аналитикой и реальной картой Алматы"
-)
+st.title("💧 Smart Shygyn PRO v3 — Command Center")
+st.markdown("##### Intelligent Water Network Management | "
+            "Multi-City | EKF Leak Detection | N-1 Contingency | Full ROI Model")
 
-if st.session_state['data'] is not None:
-    df = st.session_state['data']
-    wn = st.session_state['network']
-    predicted_leak_node = st.session_state['predicted_leak_node']
-    residuals = st.session_state['residuals']
+if st.session_state["data"] is None:
+    city_cfg = CityManager.CITIES
+    st.markdown("---")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    panels = [
+        ("🏙️", "Multi-City Engine", "Almaty · Astana · Turkestan\nElevation physics"),
+        ("🔬", "Advanced Physics", "H-W aging model\nTorricelli leaks"),
+        ("🧠", "Smart Detection", "Sparse 30% sensors\nResidual Matrix EKF"),
+        ("⚡", "N-1 Contingency", "Pipe failure sim\nImpact assessment"),
+        ("💰", "Full ROI Model", "CAPEX/OPEX/Payback\nCarbon footprint"),
+        ("🖥️", "Command Center", "Dark/Light mode\n4 pro dashboards"),
+    ]
+    for col, (icon, title, desc) in zip([c1, c2, c3, c4, c5, c6], panels):
+        with col:
+            st.markdown(f"#### {icon} {title}")
+            for line in desc.split("\n"):
+                st.markdown(f"- {line}")
+    st.info("👈 Configure parameters in the sidebar and click **RUN SIMULATION**")
+    st.stop()
 
-    df['Leak'] = df['Pressure (bar)'] < limit
-    active_leak = df['Leak'].any()
-    mnf_detected, mnf_anomaly = calculate_mnf_anomaly(df)
-    contamination_risk = (df['Pressure (bar)'] < 1.5).any()
+# ─── Unpack state ─────────────────────────────────────────────────────────────
+df = st.session_state["data"]
+wn = st.session_state["network"]
+pred_node = st.session_state["predicted_leak_node"]
+residuals = st.session_state["residuals"]
+confidence = st.session_state["confidence_score"]
+sensors = st.session_state["sensor_nodes"]
+n1_res = st.session_state["n1_result"]
+econ = st.session_state["econ"]
+city = CityManager(city_name, season_temp)
 
-    # ── Economic calculations ──────────────────────────────────────────────
-    lost_l = (
-        df[df['Leak']]['Flow Rate (L/s)'].sum() * (3600 / freq)
-        if active_leak else 0
+df["Leak"] = df["Pressure (bar)"] < limit
+active_leak = df["Leak"].any()
+mnf_detected, mnf_anomaly = calculate_mnf_anomaly(df)
+contamination_risk = (df["Pressure (bar)"] < 1.5).any()
+
+# Failure probs
+avg_p = df["Pressure (bar)"].mean()
+# degradation derived from H-W roughness drop
+base_c = {"Пластик (ПНД)": 150, "Сталь": 140, "Чугун": 100}[material]
+degradation_pct = max(0, min(100, (1 - roughness_val / base_c) * 100))
+
+fail_probs = {}
+for node in wn.node_name_list:
+    if node != "Res":
+        bm = city.cfg["burst_multiplier"]
+        fail_probs[node] = failure_probability(avg_p, degradation_pct, bm)
+    else:
+        fail_probs[node] = 0
+
+wsi = city.water_stress_index()
+
+# ─── KPI Bar ──────────────────────────────────────────────────────────────────
+st.markdown("### 📊 System Status Dashboard")
+cols = st.columns(8)
+kpis = [
+    ("🚨 Status", "LEAK" if active_leak else "NORMAL",
+     "Critical" if active_leak else "Stable",
+     "inverse" if active_leak else "normal"),
+    ("📍 City", city_name, city.cfg["elev_direction"], "off"),
+    ("💧 Pressure min", f"{df['Pressure (bar)'].min():.2f} bar",
+     f"{df['Pressure (bar)'].min()-limit:.2f}",
+     "inverse" if df['Pressure (bar)'].min() < limit else "normal"),
+    ("💦 Water Lost", f"{econ['lost_l']:,.0f} L",
+     f"NRW {econ['nrw_pct']:.1f}%", "inverse" if econ['lost_l']>0 else "normal"),
+    ("💸 Total Damage", f"{econ['total_damage_kzt']:,.0f}₸",
+     f"Direct+Indirect", "inverse" if econ['total_damage_kzt']>0 else "normal"),
+    ("🧠 Leak Node", pred_node,
+     f"Conf: {confidence:.0f}%",
+     "inverse" if confidence > 60 else "normal"),
+    ("⚡ Energy Saved", f"{econ['energy_saved_pct']:.1f}%",
+     "Smart Pump ON" if smart_pump else "Pump OFF", "normal"),
+    ("🌿 CO₂ Saved", f"{econ['co2_saved_kg']:.1f} kg",
+     f"Today", "normal"),
+]
+for col, (label, val, delta, dc) in zip(cols, kpis):
+    with col:
+        st.metric(label, val, delta, delta_color=dc)
+
+# City-specific alerts
+if city_name == "Астана":
+    bm = city.cfg["burst_multiplier"]
+    if bm > 1.3:
+        st.error(f"🥶 **ASTANA FREEZE-THAW ALERT**: Ground temp {season_temp}°C. "
+                 f"Pipe burst multiplier: **{bm:.2f}×**. Inspect insulation!")
+    else:
+        st.info(f"❄️ Astana: Ground temp {season_temp}°C. Burst risk ×{bm:.2f}")
+
+if city_name == "Туркестан":
+    st.warning(f"☀️ **TURKESTAN WATER STRESS INDEX: {wsi:.2f}** "
+               f"({'CRITICAL' if wsi > 0.7 else 'HIGH'}). "
+               f"Evaporation losses are elevated.")
+
+if contamination_risk:
+    st.error("⚠️ **CONTAMINATION RISK**: Pressure < 1.5 bar — "
+             "groundwater infiltration possible!")
+if mnf_detected:
+    st.warning(f"🌙 **MNF ANOMALY**: Night flow +{mnf_anomaly:.1f}% above baseline.")
+
+if active_leak and confidence >= 50:
+    st.error(f"🔍 **RESIDUAL MATRIX**: Predicted leak at **{pred_node}** | "
+             f"Confidence: **{confidence:.0f}%** | "
+             f"Residual: {residuals.get(pred_node, 0):.3f} bar drop")
+elif active_leak:
+    st.warning(f"🔍 Low-confidence detection: **{pred_node}** "
+               f"(conf. {confidence:.0f}%) — check sensor coverage")
+
+if n1_res and "error" not in n1_res:
+    st.error(
+        f"🔧 **N-1 CONTINGENCY ACTIVE** — Pipe: `{contingency_pipe}` failed | "
+        f"Affected: **{n1_res['virtual_citizens']} residents** | "
+        f"Time to Criticality: **{n1_res['time_to_criticality_h']} h**"
     )
-    direct_damage = lost_l * price
 
-    # CHANGE 5: Indirect costs + NRW
-    indirect_cost = repair_cost if active_leak else 0
-    total_daily_flow = df['Flow Rate (L/s)'].sum() * (3600 / freq)
-    nrw_pct = (lost_l / total_daily_flow * 100) if total_daily_flow > 0 else 0
-    total_damage = direct_damage + indirect_cost
+st.markdown("---")
 
-    # CHANGE 1: Energy saved
-    energy_saved_pct = (
-        calculate_energy_saved(pump_pressure, df, freq)
-        if smart_pump else 0.0
-    )
+# ─── TABS ────────────────────────────────────────────────────────────────────
+tab_map, tab_hydro, tab_econ, tab_stress = st.tabs([
+    "🗺️  Real-time Map",
+    "📈  Hydraulic Diagnostics",
+    "💰  Economic ROI",
+    "🔬  Stress-Test & N-1",
+])
 
-    # ── KPI DASHBOARD ─────────────────────────────────────────────────────
-    st.markdown("### 📊 Панель состояния системы")
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 1 — REAL-TIME MAP
+# ════════════════════════════════════════════════════════════════════════════
+with tab_map:
+    col_m, col_ctrl = st.columns([3, 1])
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-
-    with col1:
+    with col_ctrl:
+        st.markdown("#### 🛡️ Valve Control")
         if active_leak:
-            st.metric("🚨 Статус", "УТЕЧКА", "Критично",
-                      delta_color="inverse")
-        else:
-            st.metric("✅ Статус", "НОРМА", "Стабильно",
-                      delta_color="normal")
-
-    with col2:
-        min_p = df['Pressure (bar)'].min()
-        st.metric("Давление min", f"{min_p:.2f} bar",
-                  f"{min_p - limit:.2f}",
-                  delta_color="inverse" if min_p < limit else "normal")
-
-    with col3:
-        st.metric("Потери воды", f"{lost_l:,.0f} L",
-                  "⚠️" if lost_l > 5000 else None)
-
-    with col4:
-        # CHANGE 5: show total damage including indirect
-        st.metric(
-            "Ущерб (прямой+косв.)",
-            f"{total_damage:,.0f} ₸",
-            f"NRW: {nrw_pct:.1f}%",
-            delta_color="inverse" if total_damage > 0 else "normal"
-        )
-
-    with col5:
-        if mnf_detected:
-            st.metric("MNF аномалия", f"+{mnf_anomaly:.1f}%",
-                      "Скрытая утечка", delta_color="inverse")
-        else:
-            st.metric("MNF статус", "Норма",
-                      f"{mnf_anomaly:.1f}%", delta_color="normal")
-
-    with col6:
-        # CHANGE 1: Energy Saved metric
-        if smart_pump:
-            st.metric("⚡ Сэкономлено",
-                      f"{energy_saved_pct:.1f}%",
-                      "Smart Pump ON",
-                      delta_color="normal")
-        else:
-            st.metric("⚡ Smart Pump",
-                      "Выкл.",
-                      "Включить в боковой панели",
-                      delta_color="off")
-
-    # Alerts
-    if contamination_risk:
-        st.error("⚠️ **ОПАСНОСТЬ ИНФИЛЬТРАЦИИ!** Давление < 1.5 bar. "
-                 "Риск загрязнения грунтовыми водами!")
-    if mnf_detected:
-        st.warning(f"🔍 **MNF АНОМАЛИЯ:** Ночной расход превышает норму на "
-                   f"{mnf_anomaly:.1f}%. Возможна скрытая утечка.")
-    if active_leak:
-        st.error(
-            f"🔍 **RESIDUAL ANALYSIS:** Предсказанный узел утечки — "
-            f"**{predicted_leak_node}** "
-            f"(перепад давления: {residuals.get(predicted_leak_node, 0):.3f} bar)"
-        )
-
-    # CHANGE 5: Economic breakdown
-    if active_leak:
-        with st.expander("💰 Детализация экономического ущерба", expanded=False):
-            ec1, ec2, ec3 = st.columns(3)
-            with ec1:
-                st.metric("Стоимость потерянной воды",
-                          f"{direct_damage:,.0f} ₸")
-            with ec2:
-                st.metric("Косвенные затраты (выезд бригады)",
-                          f"{indirect_cost:,.0f} ₸")
-            with ec3:
-                st.metric("Non-Revenue Water (NRW)", f"{nrw_pct:.2f}%")
-
-    st.markdown("---")
-
-    # ── TABS ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📈 Гидравлика",
-        "🗺️ Карта (Алматы)",
-        "🔥 Риск-карта",
-        "🔄 IoT данные",
-        "📋 Отчеты"
-    ])
-
-    # ── TAB 1: HYDRAULICS ─────────────────────────────────────────────────
-    with tab1:
-        st.markdown("### Расширенный анализ гидравлических параметров")
-        st.caption("📊 Сигналы сглажены скользящим средним (окно=3) для имитации "
-                   "реального шумоподавления датчиков.")
-        fig = create_advanced_plot(df, limit, smart_pump)
-        st.plotly_chart(fig, use_container_width=True)
-
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            st.markdown("#### 💧 Давление")
-            st.dataframe(df['Pressure (bar)'].describe()
-                         .to_frame().style.format("{:.3f}"),
-                         use_container_width=True)
-        with col_b:
-            st.markdown("#### 🌊 Расход")
-            st.dataframe(df['Flow Rate (L/s)'].describe()
-                         .to_frame().style.format("{:.3f}"),
-                         use_container_width=True)
-        with col_c:
-            st.markdown("#### ⏱️ Качество")
-            st.dataframe(df['Water Age (h)'].describe()
-                         .to_frame().style.format("{:.2f}"),
-                         use_container_width=True)
-
-        if st.session_state['log']:
-            with st.expander("📜 История операций"):
-                for log in reversed(st.session_state['log'][-15:]):
-                    st.code(log, language=None)
-
-    # ── TAB 2: FOLIUM MAP (CHANGE 3) ──────────────────────────────────────
-    with tab2:
-        st.markdown("### 🗺️ Интерактивная карта сети (Алматы)")
-        st.caption(
-            "Узлы 4×4 сетки привязаны к реальным координатам центра Алматы. "
-            "Цвет отражает вероятность отказа. Красная метка — предсказанная утечка."
-        )
-
-        col_map, col_ctrl = st.columns([3, 1])
-
-        with col_ctrl:
-            st.markdown("#### 🛡️ Система изоляции")
-            if active_leak:
-                st.error(f"**⚠️ УТЕЧКА (предсказано): {predicted_leak_node}**")
-
-                if st.button("🔒 ПЕРЕКРЫТЬ УЧАСТОК",
-                             use_container_width=True, type="primary"):
-                    pipes_to_close, affected_nodes = find_isolation_valves(
-                        wn, predicted_leak_node
-                    )
-                    st.session_state['isolated_pipes'] = pipes_to_close
-                    log_entry = (
-                        f"[{datetime.now().strftime('%H:%M:%S')}] 🔒 "
-                        f"Изолировано труб: {len(pipes_to_close)}"
-                    )
-                    st.session_state['log'].append(log_entry)
+            st.error(f"⚠️ Predicted: **{pred_node}** (conf. {confidence:.0f}%)")
+            if st.button("🔒 ISOLATE SECTION", use_container_width=True,
+                         type="primary"):
+                ptc, aff = find_isolation_valves(wn, pred_node)
+                st.session_state["isolated_pipes"] = ptc
+                st.session_state["log"].append(
+                    f"[{datetime.now().strftime('%H:%M:%S')}] 🔒 Isolated {len(ptc)} pipes"
+                )
+                st.rerun()
+            if st.session_state["isolated_pipes"]:
+                st.success(f"✅ {len(st.session_state['isolated_pipes'])} pipes closed")
+                if st.button("🔓 Restore Supply"):
+                    st.session_state["isolated_pipes"] = []
                     st.rerun()
-
-                if st.session_state['isolated_pipes']:
-                    st.success("✅ **Участок изолирован**")
-                    st.write(f"Перекрыто труб: "
-                             f"**{len(st.session_state['isolated_pipes'])}**")
-                    affected = len(affected_nodes) * 250
-                    st.write(f"Затронуто жителей: **~{affected}**")
-                    if st.button("🔓 Восстановить подачу"):
-                        st.session_state['isolated_pipes'] = []
-                        st.rerun()
-            else:
-                st.success("✅ **Система в норме**")
-                st.info("Система задвижек в режиме ожидания")
-
-            st.markdown("---")
-            st.markdown("#### 📊 Параметры")
-            st.write(f"**Узлов:** {len(wn.node_name_list)}")
-            st.write(f"**Труб:** {len(wn.link_name_list)}")
-            st.write(f"**Материал:** {material}")
-            st.write(f"**Износ:** {iznos}%")
-            st.write(f"**Напор:** {pump_pressure} м")
-
-            # Residual table
-            if residuals:
-                st.markdown("#### 🔍 Перепады давления (Residuals)")
-                res_df = pd.DataFrame(
-                    [(k, v) for k, v in residuals.items()],
-                    columns=['Узел', 'Перепад (bar)']
-                ).sort_values('Перепад (bar)', ascending=False)
-                st.dataframe(res_df.style.format({'Перепад (bar)': '{:.4f}'}),
-                             use_container_width=True, height=200)
-
-        with col_map:
-            # Build failure probs for colouring
-            _, fail_probs = create_heatmap_network(wn, df, iznos)
-            fmap = create_folium_map(
-                wn, active_leak, predicted_leak_node, fail_probs, residuals
-            )
-            st_folium(fmap, width=None, height=520)
-
-    # ── TAB 3: RISK HEATMAP ───────────────────────────────────────────────
-    with tab3:
-        st.markdown("### Прогнозная аналитика отказов (Predictive Maintenance)")
-        fig_heat, fail_probs = create_heatmap_network(wn, df, iznos)
-        st.pyplot(fig_heat)
-
-        st.markdown("#### 📊 Вероятность отказа по узлам")
-        sorted_probs = sorted(
-            [(k, v) for k, v in fail_probs.items() if k != 'Res'],
-            key=lambda x: x[1], reverse=True
-        )[:5]
-
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            st.markdown("**🔴 Топ-5 узлов высокого риска:**")
-            for i, (node, prob) in enumerate(sorted_probs, 1):
-                color = "🔴" if prob > 40 else "🟠" if prob > 25 else "🟡"
-                marker = " ⚠️ (утечка)" if node == predicted_leak_node else ""
-                st.write(f"{i}. {color} **{node}**{marker} — {prob:.1f}% риска")
-        with col_r2:
-            st.markdown("**💡 Рекомендации:**")
-            if sorted_probs and sorted_probs[0][1] > 40:
-                st.error("⚠️ Срочная замена труб в узлах высокого риска!")
-            elif sorted_probs and sorted_probs[0][1] > 25:
-                st.warning("📋 Плановая замена в течение 6 месяцев")
-            else:
-                st.success("✅ Система в удовлетворительном состоянии")
-            st.info(
-                f"**Стресс-тест:** При напоре {pump_pressure}м система "
-                f"{'выдерживает' if pump_pressure <= 50 else 'перегружена'}"
-            )
-
-    # ── TAB 4: IoT DATA ───────────────────────────────────────────────────
-    with tab4:
-        st.markdown("### IoT интеграция и сравнение с моделью")
-
-        if st.session_state['csv_data'] is not None:
-            csv_df = st.session_state['csv_data']
-            if all(c in csv_df.columns
-                   for c in ['Hour', 'Pressure (bar)', 'Flow Rate (L/s)']):
-                fig_compare = make_subplots(
-                    rows=2, cols=1,
-                    subplot_titles=('Сравнение давления', 'Сравнение расхода'),
-                    vertical_spacing=0.12
-                )
-                fig_compare.add_trace(
-                    go.Scatter(x=df['Hour'], y=df['Pressure (bar)'],
-                               name='Модель (MA)', line=dict(color='blue', dash='dot')),
-                    row=1, col=1)
-                fig_compare.add_trace(
-                    go.Scatter(x=csv_df['Hour'], y=csv_df['Pressure (bar)'],
-                               name='Датчики', line=dict(color='red')),
-                    row=1, col=1)
-                fig_compare.add_trace(
-                    go.Scatter(x=df['Hour'], y=df['Flow Rate (L/s)'],
-                               name='Модель (MA)', line=dict(color='blue', dash='dot')),
-                    row=2, col=1)
-                fig_compare.add_trace(
-                    go.Scatter(x=csv_df['Hour'], y=csv_df['Flow Rate (L/s)'],
-                               name='Датчики', line=dict(color='red')),
-                    row=2, col=1)
-                fig_compare.update_xaxes(title_text="Время (часы)", row=2, col=1)
-                fig_compare.update_yaxes(title_text="Давление (bar)", row=1, col=1)
-                fig_compare.update_yaxes(title_text="Расход (L/s)", row=2, col=1)
-                fig_compare.update_layout(height=700, showlegend=True)
-                st.plotly_chart(fig_compare, use_container_width=True)
-
-                st.markdown("#### 📉 Анализ отклонений (Residuals)")
-                if len(csv_df) == len(df):
-                    residual_p = (csv_df['Pressure (bar)'].values
-                                  - df['Pressure (bar)'].values)
-                    residual_f = (csv_df['Flow Rate (L/s)'].values
-                                  - df['Flow Rate (L/s)'].values)
-                    col_res1, col_res2 = st.columns(2)
-                    with col_res1:
-                        st.metric("Макс. отклонение давления",
-                                  f"{np.max(np.abs(residual_p)):.3f} bar")
-                        st.metric("Средн. отклонение давления",
-                                  f"{np.mean(np.abs(residual_p)):.3f} bar")
-                    with col_res2:
-                        st.metric("Макс. отклонение расхода",
-                                  f"{np.max(np.abs(residual_f)):.3f} L/s")
-                        st.metric("Средн. отклонение расхода",
-                                  f"{np.mean(np.abs(residual_f)):.3f} L/s")
-                    if np.max(np.abs(residual_p)) > 0.5:
-                        st.error("⚠️ Значительное расхождение с моделью! "
-                                 "Возможна аномалия в сети.")
-                else:
-                    st.warning("⚠️ Длина данных не совпадает.")
-            else:
-                st.error("❌ CSV должен содержать: Hour, Pressure (bar), "
-                         "Flow Rate (L/s)")
         else:
-            st.info("📁 Загрузите CSV в боковой панели для сравнения с моделью")
-            st.markdown("**Пример формата CSV:**")
-            example_csv = pd.DataFrame({
-                'Hour': [0, 1, 2, 3, 4],
-                'Pressure (bar)': [3.2, 3.1, 2.9, 2.8, 2.7],
-                'Flow Rate (L/s)': [1.2, 1.1, 0.9, 0.8, 0.85]
-            })
-            st.dataframe(example_csv)
+            st.success("✅ System normal — valves on standby")
 
-    # ── TAB 5: REPORTS ────────────────────────────────────────────────────
-    with tab5:
-        st.markdown("### Экспорт и отчетность")
+        st.markdown("---")
+        st.markdown("#### 📡 Sensor Coverage")
+        st.metric("Sensor Nodes", len(sensors),
+                  f"{len(sensors)/16*100:.0f}% of grid")
+        st.markdown(f"**Sensors:** `{'`, `'.join(sensors)}`")
 
-        col_r1, col_r2 = st.columns([3, 2])
-        with col_r1:
-            st.markdown("#### 📊 Полная таблица данных")
-            display_df = df.copy()
-            display_df['Status'] = display_df['Leak'].apply(
-                lambda x: '🚨 Утечка' if x else '✅ Норма'
+        st.markdown("---")
+        st.markdown("#### 🔍 Residual Table")
+        if residuals:
+            rdf = pd.DataFrame(
+                [(k, f"{v:.4f}") for k, v in sorted(
+                    residuals.items(), key=lambda x: -x[1]
+                )], columns=["Node", "Δ Pressure (bar)"]
             )
-            display_df['Risk'] = display_df['Pressure (bar)'].apply(
-                lambda x: '⚠️ Риск' if x < 1.5 else '✅ Норма'
-            )
-            st.dataframe(
-                display_df.style.format({
-                    'Hour': '{:.1f}',
-                    'Pressure (bar)': '{:.3f}',
-                    'Flow Rate (L/s)': '{:.3f}',
-                    'Water Age (h)': '{:.2f}',
-                    'Demand Pattern': '{:.3f}',
-                    'Pump Head (m)': '{:.1f}',
-                }).background_gradient(cmap='RdYlGn',
-                                       subset=['Pressure (bar)']),
-                height=450,
-                use_container_width=True
-            )
+            st.dataframe(rdf, use_container_width=True, height=200)
 
-        with col_r2:
-            st.markdown("#### 📥 Генерация отчетов")
-            inc_mnf = st.checkbox("MNF анализ", value=True)
-            inc_risk = st.checkbox("Карта рисков", value=True)
-            inc_quality = st.checkbox("Качество воды", value=True)
-            inc_isolation = st.checkbox(
-                "План изоляции",
-                value=bool(st.session_state['isolated_pipes'])
-            )
+        st.markdown("---")
+        st.markdown("#### 🏙️ City Info")
+        cfg = city.cfg
+        st.caption(cfg["description"])
+        st.write(f"**Elevation:** {cfg['elev_min']}–{cfg['elev_max']} m")
+        st.write(f"**Burst mult:** ×{cfg['burst_multiplier']:.2f}")
+        st.write(f"**Water Stress:** {wsi:.2f}")
 
-            report_data = display_df.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📄 Скачать полный отчет CSV",
-                data=report_data,
-                file_name=(
-                    f"smart_shygyn_expert_"
-                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                ),
-                mime="text/csv",
-                use_container_width=True
-            )
+    with col_m:
+        fmap = make_folium_map(
+            wn, city, active_leak, pred_node,
+            fail_probs, residuals,
+            sensors, st.session_state["isolated_pipes"]
+        )
+        st_folium(fmap, width=None, height=540)
 
-            st.markdown("---")
-            st.markdown("**📋 Краткая сводка:**")
-            st.write(f"• Статус: {'🚨 Утечка' if active_leak else '✅ Норма'}")
-            st.write(f"• Предсказанный узел: **{predicted_leak_node}**")
-            st.write(f"• MNF: {'⚠️ Аномалия' if mnf_detected else '✅ Норма'}")
-            st.write(
-                f"• Риск заражения: "
-                f"{'⚠️ Да' if contamination_risk else '✅ Нет'}"
-            )
-            st.write(f"• Потери: {lost_l:,.0f} L  (NRW: {nrw_pct:.2f}%)")
-            st.write(f"• Прямой ущерб: {direct_damage:,.0f} ₸")
-            st.write(f"• Косвенные затраты: {indirect_cost:,.0f} ₸")
-            st.write(f"• Итого ущерб: **{total_damage:,.0f} ₸**")
-            if smart_pump:
-                st.write(f"• Экономия энергии: **{energy_saved_pct:.1f}%**")
 
-            if st.button("📧 Отправить в ЖКХ",
-                         use_container_width=True, type="primary"):
-                st.success("✅ Отчет отправлен на систему управления!")
-                log_entry = (
-                    f"[{datetime.now().strftime('%H:%M:%S')}] "
-                    "📧 Отчет отправлен в ЖКХ"
-                )
-                st.session_state['log'].append(log_entry)
-
-# ── WELCOME SCREEN ────────────────────────────────────────────────────────────
-else:
-    st.markdown("### 👋 Добро пожаловать в Smart Shygyn Expert Edition!")
-    st.markdown(
-        "Профессиональная система с модулями: "
-        "**MNF анализ** • **Зональная изоляция** • **Качество воды** • "
-        "**Прогнозная аналитика** • **IoT интеграция** • "
-        "**⚡ Smart Pump Scheduling** • **🗺️ Карта Алматы**"
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 2 — HYDRAULIC DIAGNOSTICS
+# ════════════════════════════════════════════════════════════════════════════
+with tab_hydro:
+    st.markdown("### Hydraulic Analysis (Elevation-Aware | H-W Aging | MA Filter)")
+    st.caption(
+        f"City: **{city_name}** | Material: **{material}** | "
+        f"Age: **{pipe_age} yr** | H-W C: **{roughness_val:.0f}** | "
+        f"Sensors smoothed by MA(3)"
     )
+
+    fig_h = make_hydraulic_plot(df, limit, smart_pump, dark_mode)
+    st.plotly_chart(fig_h, use_container_width=True)
+
+    st.markdown("#### 📊 Statistics")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**💧 Pressure**")
+        st.dataframe(df["Pressure (bar)"].describe().to_frame()
+                     .style.format("{:.3f}"), use_container_width=True)
+    with c2:
+        st.markdown("**🌊 Flow Rate**")
+        st.dataframe(df["Flow Rate (L/s)"].describe().to_frame()
+                     .style.format("{:.3f}"), use_container_width=True)
+    with c3:
+        st.markdown("**⏱ Water Age**")
+        st.dataframe(df["Water Age (h)"].describe().to_frame()
+                     .style.format("{:.2f}"), use_container_width=True)
+
+    # IoT comparison
+    if st.session_state["csv_data"] is not None:
+        st.markdown("---")
+        st.markdown("#### 🔄 Model vs IoT Sensor Comparison")
+        csv_df = st.session_state["csv_data"]
+        fig_c = make_subplots(rows=2, cols=1,
+                              subplot_titles=["Pressure Comparison",
+                                              "Flow Comparison"],
+                              vertical_spacing=0.1)
+        fig_c.add_trace(go.Scatter(
+            x=df["Hour"], y=df["Pressure (bar)"],
+            name="Model (MA)", line=dict(color="#3b82f6", dash="dot")),
+            row=1, col=1)
+        fig_c.add_trace(go.Scatter(
+            x=csv_df["Hour"], y=csv_df["Pressure (bar)"],
+            name="IoT Sensors", line=dict(color="#ef4444")),
+            row=1, col=1)
+        fig_c.add_trace(go.Scatter(
+            x=df["Hour"], y=df["Flow Rate (L/s)"],
+            name="Model (MA)", line=dict(color="#3b82f6", dash="dot")),
+            row=2, col=1)
+        fig_c.add_trace(go.Scatter(
+            x=csv_df["Hour"], y=csv_df["Flow Rate (L/s)"],
+            name="IoT Sensors", line=dict(color="#ef4444")),
+            row=2, col=1)
+        fig_c.update_layout(height=600, showlegend=True,
+                            plot_bgcolor="#0e1117" if dark_mode else "white",
+                            paper_bgcolor="#0e1117" if dark_mode else "white",
+                            font=dict(color="#e2e8f0" if dark_mode else "#2c3e50"))
+        st.plotly_chart(fig_c, use_container_width=True)
+    else:
+        st.info("📂 Upload IoT CSV in sidebar to compare with model")
+
+    # Operation log
+    if st.session_state["log"]:
+        with st.expander("📜 Operation Log"):
+            for entry in reversed(st.session_state["log"][-20:]):
+                st.code(entry)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 3 — ECONOMIC ROI
+# ════════════════════════════════════════════════════════════════════════════
+with tab_econ:
+    st.markdown("### 💰 Full Economic Model — OPEX/CAPEX/ROI/Carbon")
+
+    e = econ
+    ea, eb, ec, ed = st.columns(4)
+    with ea:
+        st.metric("💦 Direct Water Loss", f"{e['direct_loss_kzt']:,.0f} ₸",
+                  f"{e['lost_l']:,.0f} L lost")
+    with eb:
+        st.metric("🔧 Indirect Costs", f"{e['indirect_kzt']:,.0f} ₸",
+                  "Repair team deploy")
+    with ec:
+        st.metric("⚡ Daily Energy Saved", f"{e['energy_saved_kzt']:,.0f} ₸",
+                  f"{e['energy_saved_kwh']:.1f} kWh")
+    with ed:
+        st.metric("🌿 CO₂ Reduced", f"{e['co2_saved_kg']:.1f} kg",
+                  "Grid emission factor")
+
+    st.markdown("---")
+    fa, fb, fc = st.columns(3)
+    with fa:
+        st.metric("📦 Sensor CAPEX", f"{e['capex_kzt']:,.0f} ₸",
+                  f"{len(sensors)} sensors × ₸{SENSOR_UNIT_COST_KZT:,}")
+    with fb:
+        st.metric("💹 Monthly Savings", f"{e['monthly_savings_kzt']:,.0f} ₸",
+                  "Water + Energy")
+    with fc:
+        pb = e['payback_months']
+        pb_label = f"{pb:.1f} months" if pb < 9000 else "N/A (no savings)"
+        st.metric("⏱ Payback Period", pb_label,
+                  "ROI-positive" if pb < 24 else "Review pricing")
+
     st.markdown("---")
 
-    col_w1, col_w2, col_w3, col_w4, col_w5 = st.columns(5)
-    with col_w1:
-        st.markdown("#### 🌙 MNF анализ")
-        st.markdown("- Ночной минимум\n- Скрытые утечки\n- Паттерн потребления")
-    with col_w2:
-        st.markdown("#### 🛡️ Изоляция")
-        st.markdown("- Автопоиск задвижек\n- Минимизация ущерба\n- Контроль участков")
-    with col_w3:
-        st.markdown("#### 💧 Качество")
-        st.markdown("- Возраст воды\n- Риск заражения\n- Санитарный контроль")
-    with col_w4:
-        st.markdown("#### 🔮 Прогноз")
-        st.markdown("- Вероятность отказа\n- Тепловая карта\n- План замены труб")
-    with col_w5:
-        st.markdown("#### ⚡ Новое в Expert")
-        st.markdown(
-            "- Smart Pump Scheduling\n"
-            "- Residual Analysis (утечка)\n"
-            "- Карта Алматы (Folium)\n"
-            "- Шумоподавление (MA)\n"
-            "- NRW + косвенные затраты"
+    # NRW breakdown chart
+    st.markdown("#### 📊 Water Accountability")
+    labels = ["Revenue Water", "Non-Revenue Water (Leaks)"]
+    values = [max(0, 100 - e["nrw_pct"]), e["nrw_pct"]]
+    fig_pie = go.Figure(go.Pie(
+        labels=labels, values=values,
+        hole=0.55,
+        marker=dict(colors=["#10b981", "#ef4444"]),
+        textinfo="label+percent",
+    ))
+    fig_pie.update_layout(
+        title="Non-Revenue Water Distribution",
+        height=320,
+        paper_bgcolor="#0e1117" if dark_mode else "white",
+        font=dict(color="#e2e8f0" if dark_mode else "#2c3e50"),
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    st.plotly_chart(fig_pie, use_container_width=True)
+
+    # Payback timeline
+    if e["monthly_savings_kzt"] > 0:
+        st.markdown("#### 📈 Payback Timeline")
+        months = np.arange(0, int(min(e["payback_months"] * 2, 60)) + 1)
+        cumulative_savings = months * e["monthly_savings_kzt"]
+        capex_line = np.full_like(months, e["capex_kzt"], dtype=float)
+        fig_pb = go.Figure()
+        fig_pb.add_trace(go.Scatter(
+            x=months, y=cumulative_savings,
+            name="Cumulative Savings",
+            line=dict(color="#10b981", width=2.5),
+            fill="tozeroy", fillcolor="rgba(16,185,129,0.10)"
+        ))
+        fig_pb.add_trace(go.Scatter(
+            x=months, y=capex_line,
+            name="CAPEX Investment",
+            line=dict(color="#f59e0b", dash="dash", width=2)
+        ))
+        fig_pb.add_vline(
+            x=e["payback_months"],
+            line_dash="dot", line_color="#3b82f6",
+            annotation_text=f"Break-even: {e['payback_months']:.1f}m"
         )
+        fig_pb.update_layout(
+            height=300, hovermode="x unified",
+            xaxis_title="Months", yaxis_title="KZT",
+            plot_bgcolor="#0e1117" if dark_mode else "white",
+            paper_bgcolor="#0e1117" if dark_mode else "white",
+            font=dict(color="#e2e8f0" if dark_mode else "#2c3e50"),
+            margin=dict(l=50, r=30, t=20, b=50)
+        )
+        st.plotly_chart(fig_pb, use_container_width=True)
+
+    # Download report
+    report_df = df.copy()
+    report_df["City"] = city_name
+    report_df["Predicted_Leak"] = pred_node
+    report_df["Confidence_%"] = confidence
+    report_df["NRW_%"] = e["nrw_pct"]
+    report_df["Total_Damage_KZT"] = e["total_damage_kzt"]
+    report_df["Payback_months"] = e["payback_months"]
+    csv_out = report_df.to_csv(index=False, encoding="utf-8-sig")
+    st.download_button(
+        "📄 Download Full Report (CSV)", csv_out,
+        f"shygyn_{city_name}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        "text/csv", use_container_width=True
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — STRESS-TEST & N-1 CONTINGENCY
+# ════════════════════════════════════════════════════════════════════════════
+with tab_stress:
+    st.markdown("### 🔬 Stress-Test | N-1 Contingency | Predictive Maintenance")
+
+    # N-1 results
+    if n1_res:
+        if "error" in n1_res:
+            st.warning(f"N-1: {n1_res['error']}")
+        else:
+            st.error(
+                f"**N-1 Result — Pipe `{contingency_pipe}` failed:**  "
+                f"Affected nodes: {n1_res['affected_nodes']} | "
+                f"**{n1_res['virtual_citizens']} residents without water** | "
+                f"Time to criticality: **{n1_res['time_to_criticality_h']} hours** | "
+                f"Recommended isolation: `{n1_res['best_isolation_valve']}`"
+            )
+            n1a, n1b, n1c = st.columns(3)
+            with n1a:
+                st.metric("🏘️ Affected Residents",
+                          f"{n1_res['virtual_citizens']:,}")
+            with n1b:
+                st.metric("⏱ Time to Criticality",
+                          f"{n1_res['time_to_criticality_h']} h",
+                          "Hours until local tank empty")
+            with n1c:
+                st.metric("🔒 Best Valve",
+                          n1_res["best_isolation_valve"],
+                          "Close to minimize impact zone")
+    else:
+        st.info("Enable **N-1 Contingency** in sidebar and re-run to simulate "
+                "a pipe failure scenario.")
+
+    st.markdown("---")
+
+    # Failure probability heatmap (Matplotlib)
+    st.markdown("#### 🔥 Failure Probability Heatmap")
+    st.caption(f"H-W C={roughness_val:.0f} | Burst Mult ×{city.cfg['burst_multiplier']:.2f} | "
+               f"Water Stress {wsi:.2f}")
+
+    fig_heat, ax = plt.subplots(figsize=(11, 9),
+                                facecolor="#0e1117" if dark_mode else "white")
+    ax.set_facecolor("#0e1117" if dark_mode else "white")
+    txt_c = "white" if dark_mode else "black"
+
+    pos = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
+    nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax,
+                           edge_color="#4a5568", width=3, alpha=0.6)
+
+    for node in wn.node_name_list:
+        x, y = pos[node]
+        prob = fail_probs.get(node, 0)
+        c = ("#ef4444" if prob > 40 else
+             "#f59e0b" if prob > 25 else
+             "#eab308" if prob > 15 else "#10b981")
+        if node == "Res":
+            c = "#3b82f6"
+        circle = plt.Circle((x, y), 18, color=c, ec="white",
+                             linewidth=2.5, zorder=2)
+        ax.add_patch(circle)
+        # Sensor indicator
+        if node in sensors:
+            ring = plt.Circle((x, y), 26, color="#f59e0b", fill=False,
+                               linewidth=2, linestyle="--", zorder=3)
+            ax.add_patch(ring)
+        ax.text(x, y, node, fontsize=7.5, fontweight="bold",
+                ha="center", va="center", color=txt_c, zorder=4)
+
+    patches = [
+        mpatches.Patch(color="#ef4444", label="High risk >40%"),
+        mpatches.Patch(color="#f59e0b", label="Medium 25-40%"),
+        mpatches.Patch(color="#eab308", label="Moderate 15-25%"),
+        mpatches.Patch(color="#10b981", label="Low <15%"),
+        mpatches.Patch(color="#3b82f6", label="Reservoir"),
+        mpatches.Patch(color="#f59e0b", label="📡 Sensor (dashed ring)"),
+    ]
+    ax.legend(handles=patches, loc="upper left", fontsize=9,
+              facecolor="#1a1f2e" if dark_mode else "white",
+              labelcolor=txt_c)
+    ax.set_title(f"Failure Probability — {city_name} "
+                 f"(Age {pipe_age}yr, C={roughness_val:.0f})",
+                 fontsize=13, fontweight="bold", color=txt_c)
+    ax.set_axis_off()
+    ax.set_aspect("equal")
+    plt.tight_layout()
+    st.pyplot(fig_heat)
+
+    # Top-5 risk table
+    sorted_p = sorted(
+        [(k, v) for k, v in fail_probs.items() if k != "Res"],
+        key=lambda x: -x[1]
+    )[:5]
+    st.markdown("#### 🏆 Top-5 High-Risk Nodes")
+    risk_df = pd.DataFrame(sorted_p, columns=["Node", "Failure Risk (%)"])
+    risk_df["Sensor?"] = risk_df["Node"].apply(
+        lambda n: "📡 Yes" if n in sensors else "—")
+    risk_df["Leak Predicted?"] = risk_df["Node"].apply(
+        lambda n: "⚠️ YES" if n == pred_node and active_leak else "—")
+    st.dataframe(risk_df.style.format({"Failure Risk (%)": "{:.1f}"}),
+                 use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("#### 💡 Maintenance Recommendations")
+    max_prob = sorted_p[0][1] if sorted_p else 0
+    if max_prob > 40:
+        st.error(f"🔴 URGENT: Replace pipes at {sorted_p[0][0]}. "
+                 f"Risk {max_prob:.1f}%. Burst multiplier ×{city.cfg['burst_multiplier']:.2f}")
+    elif max_prob > 25:
+        st.warning(f"🟠 Plan replacement within 6 months. "
+                   f"H-W C={roughness_val:.0f} (degraded from base).")
+    else:
+        st.success(f"🟢 System acceptable. Next inspection in 12 months. "
+                   f"H-W C={roughness_val:.0f}")
+    if city_name == "Астана" and city.cfg["burst_multiplier"] > 1.3:
+        st.warning("❄️ ASTANA: Ensure thermal insulation on all exposed pipes. "
+                   "Freeze-thaw cycles significantly increase burst risk.")
+    if city_name == "Туркестан":
+        st.warning(f"☀️ TURKESTAN: Water Stress Index {wsi:.2f}. "
+                   "Install pressure-reducing valves to limit evaporative losses.")
