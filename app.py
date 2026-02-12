@@ -121,6 +121,7 @@ if df is not None:
     total_leaks = int(df['AI_Alert'].sum())
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Мониторинг", "📋 Данные", "💰 Экономика", "🛠 Тех-аудит"])
 
+   # --- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ СРАЗУ ПОСЛЕ tab1, tab2, tab3 ---
     with tab1:
         c1, c2, c3, c4 = st.columns(4)
         is_leak = total_leaks > 0
@@ -143,15 +144,17 @@ if df is not None:
                 send_telegram_msg(msg)
 
     with tab2:
+        st.subheader("📋 Таблица сырых данных")
         st.dataframe(df.style.highlight_max(axis=0, subset=['Flow Rate (L/s)'], color='orange'))
+        st.download_button("📥 Экспорт в CSV", df.to_csv(), "report_shygyn.csv")
 
     with tab3:
-        st.subheader("Прогноз потерь (30 дней)")
+        st.subheader("💰 Экономический прогноз")
         daily_loss_val = lost_vol * 24 if total_leaks > 0 else 0
-        st.info(f"Риск потерь: {daily_loss_val * 30 * tariff:,.0f} ₸/мес")
+        st.info(f"Прогноз потерь: {daily_loss_val * 30 * tariff:,.0f} ₸/мес")
         st.bar_chart(np.random.randint(100, 500, 30))
 
-   with tab4:
+    with tab4:
         st.subheader("🗺 Цифровой двойник: Анализ городского квартала")
         if wn:
             import networkx as nx
@@ -161,32 +164,33 @@ if df is not None:
             pos = {node: wn.get_node(node).coordinates for node in wn.node_name_list}
             leak_node = st.session_state.get('leak_node', None)
             
-            # Цвета: Резервуар - синий, Обычные - зеленые, Авария - мигающий красный
+            # Цвета: Резервуар - синий, Обычные - зеленые, Авария - красный
             node_colors = []
             node_sizes = []
             for node in wn.node_name_list:
                 if node == 'Res':
-                    node_colors.append('#1f77b4') # Синий
+                    node_colors.append('#1f77b4') 
                     node_sizes.append(500)
                 elif node == leak_node and is_leak:
-                    node_colors.append('#d62728') # Красный
+                    node_colors.append('#d62728') 
                     node_sizes.append(700)
                 else:
-                    node_colors.append('#2ca02c') # Зеленый
+                    node_colors.append('#2ca02c') 
                     node_sizes.append(200)
             
-            # Рисуем сеть
+            # Рисуем трубы и узлы
             nx.draw_networkx_edges(graph, pos, ax=ax, width=1.5, edge_color='#bdc3c7', alpha=0.7)
             nx.draw_networkx_nodes(graph, pos, ax=ax, node_color=node_colors, node_size=node_sizes, edgecolors='white')
             
-            # Подписи только для важных узлов
+            # Подписи
             important_nodes = {'Res': 'ИСТОЧНИК', leak_node: 'ЗОНА АВАРИИ' if is_leak else ''}
             labels = {n: important_nodes.get(n, '') for n in wn.node_name_list}
-            nx.draw_networkx_labels(graph, pos, labels=labels, ax=ax, font_size=12, font_weight='bold', font_color='#2c3e50')
+            nx.draw_networkx_labels(graph, pos, labels=labels, ax=ax, font_size=12, font_weight='bold')
             
             ax.axis('off')
             st.pyplot(fig_map)
             
             if is_leak:
-                st.critical(f"📍 Авария локализована в секторе: **{leak_node}**")
-                st.info("ИИ рекомендует перекрыть задвижки PV_1_2 и PH_2_1 для изоляции участка.")
+                st.error(f"📍 Авария локализована в узле: **{leak_node}**")
+        else:
+            st.info("Проекция доступна только после запуска EPANET симуляции.")
