@@ -110,7 +110,7 @@ if st.session_state.get('data') is not None:
         # Продвинутый график Plotly
         fig = px.line(df, y=['Pressure (bar)', 'Flow Rate (L/s)'], 
                      title="Осциллограмма гидравлических параметров",
-                     color_discrete_map={"Pressure (bar)": "#3498db", "Flow Rate (L/s)": "#e67e22"})
+                     color_discrete_map={"Pressure (bar)": "#000000", "Flow Rate (L/s)": "#000000"})
         fig.add_hline(y=limit, line_dash="dash", line_color="red", annotation_text="Порог детекции")
         st.plotly_chart(fig, use_container_width=True)
         
@@ -124,7 +124,7 @@ if st.session_state.get('data') is not None:
             pos = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
             l_node = st.session_state['leak_node']
             
-            n_colors = ['#e74c3c' if (n == l_node and active_leak) else '#3498db' if n == 'Res' else '#2ecc71' for n in wn.node_name_list]
+            n_colors = ['#000000' if (n == l_node and active_leak) else '#000000' if n == 'Res' else '#000000' for n in wn.node_name_list]
             
             nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax, edge_color='#bdc3c7', width=2)
             nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, node_color=n_colors, node_size=400, edgecolors='white')
