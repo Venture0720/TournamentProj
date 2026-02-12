@@ -46,7 +46,6 @@ def run_epanet_simulation(material_c, degradation, sampling_rate):
     p = results.node['pressure'][leak_node] * 0.1 
     f = results.link['flowrate']['P_Main'] * 1000 
     
-    # Генерация "живого" шума
     noise_p = np.random.normal(0, 0.04, len(p))
     noise_f = np.random.normal(0, 0.08, len(f))
     
@@ -61,37 +60,31 @@ def run_epanet_simulation(material_c, degradation, sampling_rate):
 # --- 2. ИНТЕРФЕЙС ---
 st.set_page_config(page_title="Smart Shygyn PRO", layout="wide", page_icon="💧")
 
-# Кастомный CSS для красоты
+# Кастомный CSS для контраста (черный текст в метриках и белый фон)
 st.markdown("""
     <style>
     .main { background-color: #f5f7f9; }
-    /* Метрики: белый фон, черный текст */
-    [data-testid="stMetricValue"] { color: #1a1a1a !important; }
-    [data-testid="stMetricLabel"] { color: #4f4f4f !important; }
+    [data-testid="stMetricValue"] { color: #1a1a1a !important; font-weight: bold; }
+    [data-testid="stMetricLabel"] { color: #333333 !important; font-size: 1.1rem; }
     .stMetric { 
         background-color: #ffffff; 
         padding: 15px; 
         border-radius: 10px; 
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        border: 1px solid #e0e0e0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border: 1px solid #d1d8e0;
     }
-    </style>
-    """, unsafe_allow_html=True)
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    h1, h2, h3, h4 { color: #1a1a1a !important; }
     </style>
     """, unsafe_allow_html=True)
 
-st.sidebar.title("🧪 Инженерная лаборатория")
+st.sidebar.title("🧪 Лаборатория")
 with st.sidebar.expander("⚙️ Параметры сети", expanded=True):
     m_types = {"Пластик (ПНД)": 150, "Сталь": 140, "Чугун": 100}
     material = st.selectbox("Материал труб", list(m_types.keys()))
     iznos = st.slider("Износ системы (%)", 0, 60, 15)
     freq = st.select_slider("Частота датчиков (Гц)", options=[1, 2, 4])
 
-with st.sidebar.expander("💸 Экономика и ПОИ", expanded=True):
+with st.sidebar.expander("💸 Экономика", expanded=True):
     price = st.number_input("Тариф за литр (тг)", value=0.55)
     limit = st.slider("Порог детекции (Bar)", 1.0, 5.0, 2.7)
 
@@ -99,7 +92,7 @@ if st.sidebar.button("🚀 ОБНОВИТЬ ЦИФРОВОЙ ДВОЙНИК", us
     data, net = run_epanet_simulation(m_types[material], iznos, freq)
     st.session_state['data'] = data
     st.session_state['network'] = net
-    st.session_state['log'] = f"[{datetime.now().strftime('%H:%M:%S')}] Модель пересчитана. Материал: {material}, Износ: {iznos}%"
+    st.session_state['log'] = f"[{datetime.now().strftime('%H:%M:%S')}] Обновлено: {material}, износ {iznos}%"
 
 # --- 3. ГЛАВНЫЙ ЭКРАН ---
 st.title("💧 Smart Shygyn: AI Water Management")
@@ -112,64 +105,53 @@ if st.session_state.get('data') is not None:
 
     # СИСТЕМА KPI
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Текущий статус", "🚨 КРИТИЧЕСКИ" if active_leak else "✅ СТАБИЛЬНО")
+    c1.metric("Текущий статус", "🚨 АВАРИЯ" if active_leak else "✅ НОРМА")
     c2.metric("Мин. Давление", f"{df['Pressure (bar)'].min():.2f} Bar")
     
     lost_l = df[df['Leak'] == True]['Flow Rate (L/s)'].sum() * (3600 / freq) if active_leak else 0
-    c3.metric("Потери (литры)", f"{lost_l:,.0f} L")
-    c4.metric("Ущерб (тенге)", f"{lost_l * price:,.0f} ₸")
+    c3.metric("Потери (L)", f"{lost_l:,.0f} L")
+    c4.metric("Ущерб (₸)", f"{lost_l * price:,.0f} ₸")
 
-    t1, t2, t3 = st.tabs(["📊 Аналитический дашборд", "🗺 Карта инцидентов", "🧾 Отчетность"])
+    t1, t2, t3 = st.tabs(["📊 Аналитика", "🗺 Карта инцидентов", "🧾 Отчетность"])
 
     with t1:
-        # Продвинутый график Plotly с исправленными цветами
         fig = px.line(df, y=['Pressure (bar)', 'Flow Rate (L/s)'], 
                      title="Осциллограмма гидравлических параметров",
                      color_discrete_map={"Pressure (bar)": "#3498db", "Flow Rate (L/s)": "#e67e22"})
         
-        # Настройка цветов текста и осей, чтобы не сливались
         fig.update_layout(
-            font=dict(color="black"),  # Черный шрифт для всего графика
-            title_font=dict(color="black"),
-            legend_font=dict(color="black"),
-            paper_bgcolor='rgba(0,0,0,0)', # Прозрачный фон
-            plot_bgcolor='rgba(0,0,0,0)',
-            xaxis=dict(gridcolor='lightgray', linecolor='black', tickfont=dict(color='black')),
-            yaxis=dict(gridcolor='lightgray', linecolor='black', tickfont=dict(color='black'))
+            font=dict(color="black"),
+            paper_bgcolor='white',
+            plot_bgcolor='#f8f9fa',
+            xaxis=dict(gridcolor='lightgray', tickfont=dict(color='black')),
+            yaxis=dict(gridcolor='lightgray', tickfont=dict(color='black'))
         )
         
-        fig.add_hline(y=limit, line_dash="dash", line_color="red", annotation_text="Порог детекции")
+        fig.add_hline(y=limit, line_dash="dash", line_color="red", annotation_text="Порог тревоги", annotation_font_color="red")
         st.plotly_chart(fig, use_container_width=True)
-   with t2:
+        if st.session_state.get('log'):
+            st.code(st.session_state['log'])
+
+    with t2:
         col_left, col_right = st.columns([2, 1])
         
         with col_left:
-            # Создаем фигуру с явно белым фоном для контраста
             fig_map, ax = plt.subplots(figsize=(10, 7), facecolor='white')
             ax.set_facecolor('white')
-            
             pos = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
             l_node = st.session_state.get('leak_node')
             
-            # Настройка цветов: синий - резервуар, красный - авария, зеленый - норма
             n_colors = []
             for n in wn.node_name_list:
-                if n == 'Res':
-                    n_colors.append('#3498db')
-                elif n == l_node and active_leak:
-                    n_colors.append('#e74c3c')
-                else:
-                    n_colors.append('#2ecc71')
+                if n == 'Res': n_colors.append('#3498db')
+                elif n == l_node and active_leak: n_colors.append('#e74c3c')
+                else: n_colors.append('#2ecc71')
             
-            # Рисуем трубы (серые линии)
             nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax, edge_color='#7f8c8d', width=2)
+            nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, node_color=n_colors, node_size=600, edgecolors='black')
             
-            # Рисуем узлы с черной обводкой
-            nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, node_color=n_colors, node_size=500, edgecolors='black')
-            
-            # Рисуем названия узлов ЧЕРНЫМ цветом
-            # Сдвигаем текст чуть выше (v[1] + 15), чтобы он не сливался с кружком
-            labels_pos = {k: (v[0], v[1] + 15) for k, v in pos.items()}
+            # Названия узлов ЧЕРНЫМ цветом
+            labels_pos = {k: (v[0], v[1] + 18) for k, v in pos.items()}
             nx.draw_networkx_labels(wn.get_graph(), labels_pos, ax=ax, font_size=10, font_color='black', font_weight='bold')
             
             ax.set_axis_off()
@@ -185,3 +167,11 @@ if st.session_state.get('data') is not None:
                 st.error("🚨 Статус: Требуется выезд!")
             else:
                 st.success("✅ Статус: Система в норме")
+
+    with t3:
+        st.subheader("Журнал данных")
+        st.dataframe(df.style.highlight_between(left=0, right=limit, subset=['Pressure (bar)'], color='#ffcccc'))
+        st.download_button("📩 Скачать CSV", df.to_csv(), "report.csv", use_container_width=True)
+
+else:
+    st.info("👋 Настройте параметры и нажмите 'ОБНОВИТЬ ЦИФРОВОЙ ДВОЙНИК' для начала.")
