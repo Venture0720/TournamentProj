@@ -140,39 +140,48 @@ if st.session_state.get('data') is not None:
         
         fig.add_hline(y=limit, line_dash="dash", line_color="red", annotation_text="Порог детекции")
         st.plotly_chart(fig, use_container_width=True)
-    with t2:
-       with col_left:
-            # Создаем фигуру с явно белым фоном
+   with t2:
+        col_left, col_right = st.columns([2, 1])
+        
+        with col_left:
+            # Создаем фигуру с явно белым фоном для контраста
             fig_map, ax = plt.subplots(figsize=(10, 7), facecolor='white')
             ax.set_facecolor('white')
             
             pos = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
-            l_node = st.session_state['leak_node']
+            l_node = st.session_state.get('leak_node')
             
-            n_colors = ['#e74c3c' if (n == l_node and active_leak) else '#3498db' if n == 'Res' else '#2ecc71' for n in wn.node_name_list]
+            # Настройка цветов: синий - резервуар, красный - авария, зеленый - норма
+            n_colors = []
+            for n in wn.node_name_list:
+                if n == 'Res':
+                    n_colors.append('#3498db')
+                elif n == l_node and active_leak:
+                    n_colors.append('#e74c3c')
+                else:
+                    n_colors.append('#2ecc71')
             
-            # Рисуем трубы
+            # Рисуем трубы (серые линии)
             nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax, edge_color='#7f8c8d', width=2)
             
-            # Рисуем узлы
+            # Рисуем узлы с черной обводкой
             nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, node_color=n_colors, node_size=500, edgecolors='black')
             
-            # Рисуем надписи (черным цветом с небольшим смещением, чтобы не перекрывать узлы)
-            labels_pos = {k: (v[0], v[1] + 15) for k, v in pos.items()} # Сдвигаем текст чуть выше
+            # Рисуем названия узлов ЧЕРНЫМ цветом
+            # Сдвигаем текст чуть выше (v[1] + 15), чтобы он не сливался с кружком
+            labels_pos = {k: (v[0], v[1] + 15) for k, v in pos.items()}
             nx.draw_networkx_labels(wn.get_graph(), labels_pos, ax=ax, font_size=10, font_color='black', font_weight='bold')
             
             ax.set_axis_off()
             st.pyplot(fig_map)
+        
         with col_right:
-            st.info("💡 **Анализ топологии:**")
-            st.write(f"- Резервуар: **Напор стабилен**")
-            st.write(f"- Точка утечки: **{l_node if active_leak else 'Не обнаружена'}**")
-            st.write(f"- Рекомендация: **{'Срочный выезд бригады' if active_leak else 'Плановый осмотр'}**")
-
-    with t3:
-        st.subheader("Экспорт данных для акимата/ЖКХ")
-        st.dataframe(df)
-        st.download_button("📩 Сформировать отчет (CSV)", df.to_csv(), "smart_shygyn_report.csv", use_container_width=True)
-
-else:
-    st.info("👋 Добро пожаловать! Настройте инженерные параметры слева и нажмите 'Запустить расчет' для начала мониторинга.")
+            st.markdown("<h4 style='color: black;'>💡 Анализ топологии:</h4>", unsafe_allow_html=True)
+            st.write(f"📍 **Точка утечки:** {l_node if active_leak else 'Не обнаружена'}")
+            st.write(f"🏗 **Материал:** {material}")
+            st.write(f"📉 **Износ:** {iznos}%")
+            
+            if active_leak:
+                st.error("🚨 Статус: Требуется выезд!")
+            else:
+                st.success("✅ Статус: Система в норме")
