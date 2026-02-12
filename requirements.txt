@@ -2,6 +2,8 @@ streamlit
 pandas
 numpy
 wntr
-requests
 plotly
 matplotlib
+networkx
+folium
+streamlit-folium
