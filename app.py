@@ -65,6 +65,21 @@ st.set_page_config(page_title="Smart Shygyn PRO", layout="wide", page_icon="💧
 st.markdown("""
     <style>
     .main { background-color: #f5f7f9; }
+    /* Метрики: белый фон, черный текст */
+    [data-testid="stMetricValue"] { color: #1a1a1a !important; }
+    [data-testid="stMetricLabel"] { color: #4f4f4f !important; }
+    .stMetric { 
+        background-color: #ffffff; 
+        padding: 15px; 
+        border-radius: 10px; 
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border: 1px solid #e0e0e0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     </style>
     """, unsafe_allow_html=True)
@@ -107,31 +122,47 @@ if st.session_state.get('data') is not None:
     t1, t2, t3 = st.tabs(["📊 Аналитический дашборд", "🗺 Карта инцидентов", "🧾 Отчетность"])
 
     with t1:
-        # Продвинутый график Plotly
+        # Продвинутый график Plotly с исправленными цветами
         fig = px.line(df, y=['Pressure (bar)', 'Flow Rate (L/s)'], 
                      title="Осциллограмма гидравлических параметров",
-                     color_discrete_map={"Pressure (bar)": "#000000", "Flow Rate (L/s)": "#000000"})
+                     color_discrete_map={"Pressure (bar)": "#3498db", "Flow Rate (L/s)": "#e67e22"})
+        
+        # Настройка цветов текста и осей, чтобы не сливались
+        fig.update_layout(
+            font=dict(color="black"),  # Черный шрифт для всего графика
+            title_font=dict(color="black"),
+            legend_font=dict(color="black"),
+            paper_bgcolor='rgba(0,0,0,0)', # Прозрачный фон
+            plot_bgcolor='rgba(0,0,0,0)',
+            xaxis=dict(gridcolor='lightgray', linecolor='black', tickfont=dict(color='black')),
+            yaxis=dict(gridcolor='lightgray', linecolor='black', tickfont=dict(color='black'))
+        )
+        
         fig.add_hline(y=limit, line_dash="dash", line_color="red", annotation_text="Порог детекции")
         st.plotly_chart(fig, use_container_width=True)
-        
-        if st.session_state.get('log'):
-            st.code(st.session_state['log'])
-
     with t2:
-        col_left, col_right = st.columns([2, 1])
-        with col_left:
-            fig_map, ax = plt.subplots(figsize=(10, 7))
+       with col_left:
+            # Создаем фигуру с явно белым фоном
+            fig_map, ax = plt.subplots(figsize=(10, 7), facecolor='white')
+            ax.set_facecolor('white')
+            
             pos = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
             l_node = st.session_state['leak_node']
             
-            n_colors = ['#000000' if (n == l_node and active_leak) else '#000000' if n == 'Res' else '#000000' for n in wn.node_name_list]
+            n_colors = ['#e74c3c' if (n == l_node and active_leak) else '#3498db' if n == 'Res' else '#2ecc71' for n in wn.node_name_list]
             
-            nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax, edge_color='#bdc3c7', width=2)
-            nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, node_color=n_colors, node_size=400, edgecolors='white')
-            nx.draw_networkx_labels(wn.get_graph(), pos, ax=ax, font_size=9, font_color='black')
+            # Рисуем трубы
+            nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax, edge_color='#7f8c8d', width=2)
+            
+            # Рисуем узлы
+            nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, node_color=n_colors, node_size=500, edgecolors='black')
+            
+            # Рисуем надписи (черным цветом с небольшим смещением, чтобы не перекрывать узлы)
+            labels_pos = {k: (v[0], v[1] + 15) for k, v in pos.items()} # Сдвигаем текст чуть выше
+            nx.draw_networkx_labels(wn.get_graph(), labels_pos, ax=ax, font_size=10, font_color='black', font_weight='bold')
+            
             ax.set_axis_off()
             st.pyplot(fig_map)
-        
         with col_right:
             st.info("💡 **Анализ топологии:**")
             st.write(f"- Резервуар: **Напор стабилен**")
