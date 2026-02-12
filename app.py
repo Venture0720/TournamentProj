@@ -7,65 +7,40 @@ import random
 import plotly.express as px
 import matplotlib.pyplot as plt
 
-# --- 1. ФУНКЦИИ (Backend) ---
+# --- 1. ФУНКЦИИ (Backend с реальной физикой) ---
 
-def validate_and_clean_data(df):
-    required_columns = ['Pressure (bar)', 'Flow Rate (L/s)']
-    for col in required_columns:
-        if col not in df.columns:
-            st.error(f"❌ В файле отсутствует колонка: {col}")
-            return None
-    df = df.dropna(subset=required_columns)
-    df = df[df['Pressure (bar)'] < 100] 
-    return df
-
-def send_telegram_msg(text):
-    try:
-        token = st.secrets["TELEGRAM_TOKEN"]
-        chat_id = st.secrets["CHAT_ID"]
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        params = {"chat_id": chat_id, "text": text}
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            st.success("✅ Отчет доставлен!")
-        else:
-            st.error(f"Ошибка Telegram: {response.text}")
-    except Exception as e:
-        st.error(f"Ошибка секретов: {e}")
-
-def run_epanet_simulation():
-    # Создаем сложную сетку 5x5 (городской квартал)
+def run_epanet_simulation(material_c, degradation, sampling_rate):
     wn = wntr.network.WaterNetworkModel()
+    dist = 100
     
-    # Параметры сетки
-    dim = 5  
-    dist = 100 # расстояние между узлами
+    # Реальный внутренний диаметр с учетом износа (минус % от номинала)
+    base_diameter = 0.2
+    actual_diameter = base_diameter * (1 - degradation / 100)
     
-    # Создаем узлы и трубы автоматически
-    for i in range(dim):
-        for j in range(dim):
+    # Создаем сетку
+    for i in range(4):
+        for j in range(4):
             name = f"N_{i}_{j}"
             wn.add_junction(name, base_demand=0.001, elevation=10)
             wn.get_node(name).coordinates = (i * dist, j * dist)
-            
-            # Соединяем горизонтально
             if i > 0:
-                wn.add_pipe(f"PH_{i}_{j}", f"N_{i-1}_{j}", name, length=dist, diameter=0.2, roughness=100)
-            # Соединяем вертикально
+                # Вставляем выбранную шероховатость (material_c)
+                wn.add_pipe(f"PH_{i}_{j}", f"N_{i-1}_{j}", name, 
+                            length=dist, diameter=actual_diameter, roughness=material_c)
             if j > 0:
-                wn.add_pipe(f"PV_{i}_{j}", f"N_{i}_{j-1}", name, length=dist, diameter=0.2, roughness=100)
+                wn.add_pipe(f"PV_{i}_{j}", f"N_{i}_{j-1}", name, 
+                            length=dist, diameter=actual_diameter, roughness=material_c)
 
-    # Добавляем мощный резервуар в углу
     wn.add_reservoir('Res', base_head=40)
     wn.get_node('Res').coordinates = (-dist, -dist)
-    wn.add_pipe('P_Main', 'Res', 'N_0_0', length=dist, diameter=0.4, roughness=100)
+    wn.add_pipe('P_Main', 'Res', 'N_0_0', length=dist, diameter=0.4, roughness=material_c)
 
-    # Имитируем СЛУЧАЙНУЮ аварию в одном из узлов квартала
-    leak_node = f"N_{random.randint(1, 4)}_{random.randint(1, 4)}"
-    st.session_state['leak_node'] = leak_node # Запоминаем для карты
+    leak_node = "N_2_2" # Для стабильности теста
+    st.session_state['leak_node'] = leak_node
     
+    # Настройка времени симуляции
     wn.options.time.duration = 24 * 3600
-    wn.options.time.report_timestep = 3600
+    wn.options.time.report_timestep = 3600 // sampling_rate # Частота данных
     
     node = wn.get_node(leak_node)
     node.add_leak(wn, area=0.08, start_time=12 * 3600)
@@ -73,124 +48,71 @@ def run_epanet_simulation():
     sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim()
     
-    # Берем данные давления именно из узла утечки
     p = results.node['pressure'][leak_node] * 0.1
     f = results.link['flowrate']['P_Main'] * 1000
-    noise = np.random.normal(0, 0.02, len(p))
     
-    df_res = pd.DataFrame({
-        'Pressure (bar)': p.values + noise,
-        'Flow Rate (L/s)': np.abs(f.values) + (noise * 0.1),
-        'Leak Status': [0 if t < 12*3600 else 1 for t in p.index]
-    })
+    return pd.DataFrame({
+        'Pressure (bar)': p.values,
+        'Flow Rate (L/s)': np.abs(f.values)
+    }), wn
+
+# --- 2. SIDEBAR (Функциональные настройки) ---
+st.sidebar.title("🛠 Инженерные параметры")
+
+# Выбор материала напрямую влияет на формулу трения
+materials = {"Пластик (ПНД)": 150, "Новая сталь": 140, "Чугун (старый)": 100, "Бетон": 110}
+selected_material = st.sidebar.selectbox("Материал труб (Коэф. шероховатости):", list(materials.keys()))
+c_value = materials[selected_material]
+
+# Износ влияет на диаметр труб в модели
+degradation = st.sidebar.slider("Степень износа сети (% зарастания):", 0, 50, 10)
+
+# Sampling влияет на плотность точек на графике
+sampling = st.sidebar.select_slider("Частота опроса датчиков (раз в час):", options=[1, 2, 4, 6])
+
+tariff = st.sidebar.number_input("Тариф (тг/литр):", value=0.45)
+threshold = st.sidebar.slider("Порог детекции утечки (Bar):", 1.0, 5.0, 2.8)
+
+if st.sidebar.button("🚀 Пересчитать Цифровой Двойник"):
+    # Теперь функция принимает РЕАЛЬНЫЕ параметры
+    data, network = run_epanet_simulation(c_value, degradation, sampling)
+    st.session_state['data'] = data
+    st.session_state['network'] = network
+
+# --- 3. ИНТЕРФЕЙС ---
+st.title("💧 Smart Shygyn: Промышленный мониторинг")
+
+if st.session_state.get('data') is not None:
+    df = st.session_state['data']
+    wn = st.session_state['network']
     
-    return df_res, wn
-
-# --- 2. КОНФИГУРАЦИЯ ИНТЕРФЕЙСА ---
-st.set_page_config(page_title="Smart Shygyn PRO", page_icon="💧", layout="wide")
-
-# --- 3. SIDEBAR ---
-st.sidebar.title("💧 Smart Shygyn v2.0")
-mode = st.sidebar.radio("Режим данных:", ["Генератор EPANET", "Загрузить CSV"])
-city = st.sidebar.selectbox("📍 Локация:", ["Алматы", "Астана", "Шымкент"])
-tariff = st.sidebar.slider("💰 Тариф (тг/литр):", 0.1, 1.5, 0.5)
-threshold = st.sidebar.slider("📉 Порог тревоги (Bar):", 1.0, 5.0, 2.5)
-
-if 'data' not in st.session_state:
-    st.session_state['data'] = None
-    st.session_state['network'] = None
-
-if mode == "Генератор EPANET":
-    if st.sidebar.button("🚀 Запустить ИИ-симуляцию"):
-        data, network = run_epanet_simulation()
-        st.session_state['data'] = data
-        st.session_state['network'] = network
-else:
-    uploaded_file = st.sidebar.file_uploader("Загрузите CSV", type="csv")
-    if uploaded_file:
-        raw_df = pd.read_csv(uploaded_file)
-        st.session_state['data'] = validate_and_clean_data(raw_df)
-
-# --- 4. ОСНОВНОЙ БЛОК ---
-st.title(f"🏢 Мониторинг сети: {city}")
-df = st.session_state['data']
-wn = st.session_state['network']
-
-if df is not None:
-    df['AI_Alert'] = df['Pressure (bar)'] < threshold
-    total_leaks = int(df['AI_Alert'].sum())
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Мониторинг", "📋 Данные", "💰 Экономика", "🛠 Тех-аудит"])
-
-   # --- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ СРАЗУ ПОСЛЕ tab1, tab2, tab3 ---
-    with tab1:
-        c1, c2, c3, c4 = st.columns(4)
-        is_leak = total_leaks > 0
-        c1.metric("Статус", "🔴 КРИТИЧЕСКИ" if is_leak else "✅ НОРМА")
-        lost_vol = df[df['AI_Alert'] == True]['Flow Rate (L/s)'].sum() * 3600
-        c2.metric("Потери воды", f"{lost_vol:.1f} л")
-        c3.metric("Убытки", f"{int(lost_vol * tariff)} ₸")
-        c4.metric("Давление (min)", f"{df['Pressure (bar)'].min():.2f} bar")
-
-        st.subheader("🌋 Анализ давления по времени")
-        fig = px.scatter(df, x=df.index, y="Pressure (bar)", 
-                         color="Pressure (bar)", 
-                         color_continuous_scale="RdYlGn")
-        st.plotly_chart(fig, use_container_width=True)
-        
+    # Логика детекции
+    df['Alert'] = df['Pressure (bar)'] < threshold
+    is_leak = df['Alert'].any()
+    
+    t1, t2, t3, t4 = st.tabs(["📊 Аналитика", "📋 Данные", "💰 Экономика", "🗺 Карта сети"])
+    
+    with t1:
+        st.subheader(f"Гидравлический режим: {selected_material}")
+        st.line_chart(df[['Pressure (bar)', 'Flow Rate (L/s)']])
         if is_leak:
-            st.error("⚠️ Внимание! Обнаружена разгерметизация участка.")
-            if st.button("📲 Отправить отчет в Telegram"):
-                msg = f"🚨 АВАРИЯ: {city}\nПотери: {lost_vol:.1f}л\nУщерб: {int(lost_vol * tariff)}тг"
-                send_telegram_msg(msg)
+            st.error(f"⚠️ ВНИМАНИЕ: Давление упало ниже {threshold} bar. Зафиксирована утечка.")
 
-    with tab2:
-        st.subheader("📋 Таблица сырых данных")
-        st.dataframe(df.style.highlight_max(axis=0, subset=['Flow Rate (L/s)'], color='orange'))
-        st.download_button("📥 Экспорт в CSV", df.to_csv(), "report_shygyn.csv")
-
-    with tab3:
-        st.subheader("💰 Экономический прогноз")
-        daily_loss_val = lost_vol * 24 if total_leaks > 0 else 0
-        st.info(f"Прогноз потерь: {daily_loss_val * 30 * tariff:,.0f} ₸/мес")
-        st.bar_chart(np.random.randint(100, 500, 30))
-
-    with tab4:
-        st.subheader("🗺 Цифровой двойник: Анализ городского квартала")
-        if wn:
-            import networkx as nx
-            fig_map, ax = plt.subplots(figsize=(12, 8))
-            
-            graph = wn.get_graph()
-            pos = {node: wn.get_node(node).coordinates for node in wn.node_name_list}
-            leak_node = st.session_state.get('leak_node', None)
-            
-            # Цвета: Резервуар - синий, Обычные - зеленые, Авария - красный
-            node_colors = []
-            node_sizes = []
-            for node in wn.node_name_list:
-                if node == 'Res':
-                    node_colors.append('#1f77b4') 
-                    node_sizes.append(500)
-                elif node == leak_node and is_leak:
-                    node_colors.append('#d62728') 
-                    node_sizes.append(700)
-                else:
-                    node_colors.append('#2ca02c') 
-                    node_sizes.append(200)
-            
-            # Рисуем трубы и узлы
-            nx.draw_networkx_edges(graph, pos, ax=ax, width=1.5, edge_color='#bdc3c7', alpha=0.7)
-            nx.draw_networkx_nodes(graph, pos, ax=ax, node_color=node_colors, node_size=node_sizes, edgecolors='white')
-            
-            # Подписи
-            important_nodes = {'Res': 'ИСТОЧНИК', leak_node: 'ЗОНА АВАРИИ' if is_leak else ''}
-            labels = {n: important_nodes.get(n, '') for n in wn.node_name_list}
-            nx.draw_networkx_labels(graph, pos, labels=labels, ax=ax, font_size=12, font_weight='bold')
-            
-            ax.axis('off')
-            st.pyplot(fig_map)
-            
-            if is_leak:
-                st.error(f"📍 Авария локализована в узле: **{leak_node}**")
-        else:
-            st.info("Проекция доступна только после запуска EPANET симуляции.")
+    with t4:
+        st.subheader("🗺 Состояние узлов городского квартала")
+        import networkx as nx
+        fig, ax = plt.subplots(figsize=(10, 6))
+        pos = {n: wn.get_node(n).coordinates for n in wn.node_name_list}
+        
+        # Визуально показываем влияние износа на толщину линий
+        edge_width = 1 + (1 - degradation/100) * 3
+        
+        nx.draw_networkx_edges(wn.get_graph(), pos, ax=ax, width=edge_width, edge_color='gray')
+        
+        # Красим аварию
+        leak_n = st.session_state['leak_node']
+        node_colors = ['red' if (n == leak_n and is_leak) else 'blue' if n == 'Res' else 'green' for n in wn.node_name_list]
+        
+        nx.draw_networkx_nodes(wn.get_graph(), pos, ax=ax, node_color=node_colors, node_size=300)
+        st.pyplot(fig)
+        st.info(f"Расчет выполнен для труб с эквивалентной шероховатостью C={c_value}")
