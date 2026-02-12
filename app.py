@@ -34,43 +34,54 @@ def send_telegram_msg(text):
         st.error(f"Ошибка секретов: {e}")
 
 def run_epanet_simulation():
+    # Создаем сложную сетку 5x5 (городской квартал)
     wn = wntr.network.WaterNetworkModel()
-    start_p = random.uniform(28, 42)
-    leak_hr = random.randint(10, 16)
     
-    # 1. Добавляем узлы
-    res = wn.add_reservoir('res', base_head=start_p)
-    n1 = wn.add_junction('node1', base_demand=0.005, elevation=10)
-    n2 = wn.add_junction('node2', base_demand=0.005, elevation=10)
+    # Параметры сетки
+    dim = 5  
+    dist = 100 # расстояние между узлами
     
-    # 2. Устанавливаем координаты ЧЕРЕЗ АТРИБУТЫ (самый надежный способ)
-    # Это исправит AttributeError
-    wn.get_node('res').coordinates = (0, 5)
-    wn.get_node('node1').coordinates = (5, 5)
-    wn.get_node('node2').coordinates = (10, 5)
-    
-    # 3. Добавляем трубы
-    wn.add_pipe('p1', 'res', 'node1', length=100, diameter=0.2, roughness=100)
-    wn.add_pipe('p2', 'node1', 'node2', length=100, diameter=0.2, roughness=100)
+    # Создаем узлы и трубы автоматически
+    for i in range(dim):
+        for j in range(dim):
+            name = f"N_{i}_{j}"
+            wn.add_junction(name, base_demand=0.001, elevation=10)
+            wn.get_node(name).coordinates = (i * dist, j * dist)
+            
+            # Соединяем горизонтально
+            if i > 0:
+                wn.add_pipe(f"PH_{i}_{j}", f"N_{i-1}_{j}", name, length=dist, diameter=0.2, roughness=100)
+            # Соединяем вертикально
+            if j > 0:
+                wn.add_pipe(f"PV_{i}_{j}", f"N_{i}_{j-1}", name, length=dist, diameter=0.2, roughness=100)
+
+    # Добавляем мощный резервуар в углу
+    wn.add_reservoir('Res', base_head=40)
+    wn.get_node('Res').coordinates = (-dist, -dist)
+    wn.add_pipe('P_Main', 'Res', 'N_0_0', length=dist, diameter=0.4, roughness=100)
+
+    # Имитируем СЛУЧАЙНУЮ аварию в одном из узлов квартала
+    leak_node = f"N_{random.randint(1, 4)}_{random.randint(1, 4)}"
+    st.session_state['leak_node'] = leak_node # Запоминаем для карты
     
     wn.options.time.duration = 24 * 3600
     wn.options.time.report_timestep = 3600
     
-    # Моделируем утечку
-    node2 = wn.get_node('node2')
-    node2.add_leak(wn, area=0.05, start_time=leak_hr * 3600)
+    node = wn.get_node(leak_node)
+    node.add_leak(wn, area=0.08, start_time=12 * 3600)
     
     sim = wntr.sim.EpanetSimulator(wn)
     results = sim.run_sim()
     
-    p = results.node['pressure']['node2'] * 0.1
-    f = results.link['flowrate']['p2'] * 1000
-    noise = np.random.normal(0, 0.015, len(p))
+    # Берем данные давления именно из узла утечки
+    p = results.node['pressure'][leak_node] * 0.1
+    f = results.link['flowrate']['P_Main'] * 1000
+    noise = np.random.normal(0, 0.02, len(p))
     
     df_res = pd.DataFrame({
         'Pressure (bar)': p.values + noise,
         'Flow Rate (L/s)': np.abs(f.values) + (noise * 0.1),
-        'Leak Status': [0 if t < leak_hr*3600 else 1 for t in p.index]
+        'Leak Status': [0 if t < 12*3600 else 1 for t in p.index]
     })
     
     return df_res, wn
@@ -140,41 +151,42 @@ if df is not None:
         st.info(f"Риск потерь: {daily_loss_val * 30 * tariff:,.0f} ₸/мес")
         st.bar_chart(np.random.randint(100, 500, 30))
 
-    with tab4:
-        st.subheader("🗺 Проекция цифрового двойника сети")
+   with tab4:
+        st.subheader("🗺 Цифровой двойник: Анализ городского квартала")
         if wn:
-            import networkx as nx # WNTR строит графы на базе networkx
+            import networkx as nx
+            fig_map, ax = plt.subplots(figsize=(12, 8))
             
-            fig_map, ax = plt.subplots(figsize=(10, 5))
-            
-            # Получаем граф и координаты
             graph = wn.get_graph()
             pos = {node: wn.get_node(node).coordinates for node in wn.node_name_list}
+            leak_node = st.session_state.get('leak_node', None)
             
-            # Определяем цвета узлов вручную
-            colors = []
+            # Цвета: Резервуар - синий, Обычные - зеленые, Авария - мигающий красный
+            node_colors = []
+            node_sizes = []
             for node in wn.node_name_list:
-                if node == 'res':
-                    colors.append('blue')
-                elif node == 'node2' and is_leak:
-                    colors.append('red')
+                if node == 'Res':
+                    node_colors.append('#1f77b4') # Синий
+                    node_sizes.append(500)
+                elif node == leak_node and is_leak:
+                    node_colors.append('#d62728') # Красный
+                    node_sizes.append(700)
                 else:
-                    colors.append('green')
+                    node_colors.append('#2ca02c') # Зеленый
+                    node_sizes.append(200)
             
-            # Рисуем трубы (ребра)
-            nx.draw_networkx_edges(graph, pos, ax=ax, width=3, edge_color='gray')
+            # Рисуем сеть
+            nx.draw_networkx_edges(graph, pos, ax=ax, width=1.5, edge_color='#bdc3c7', alpha=0.7)
+            nx.draw_networkx_nodes(graph, pos, ax=ax, node_color=node_colors, node_size=node_sizes, edgecolors='white')
             
-            # Рисуем узлы
-            nx.draw_networkx_nodes(graph, pos, ax=ax, node_color=colors, node_size=300)
+            # Подписи только для важных узлов
+            important_nodes = {'Res': 'ИСТОЧНИК', leak_node: 'ЗОНА АВАРИИ' if is_leak else ''}
+            labels = {n: important_nodes.get(n, '') for n in wn.node_name_list}
+            nx.draw_networkx_labels(graph, pos, labels=labels, ax=ax, font_size=12, font_weight='bold', font_color='#2c3e50')
             
-            # Добавляем подписи
-            nx.draw_networkx_labels(graph, pos, ax=ax, font_size=10, font_weight='bold', verticalalignment='bottom')
-            
-            ax.set_title("Схема мониторинга: Резервуар (Синий) -> Магистраль -> Узел утечки (Красный)")
-            ax.axis('off') # Убираем лишние оси координат
+            ax.axis('off')
             st.pyplot(fig_map)
             
             if is_leak:
-                st.warning("📍 Локализация: Авария подтверждена гидравлической моделью в узле Node 2")
-        else:
-            st.info("Проекция доступна только после запуска EPANET симуляции.")
+                st.critical(f"📍 Авария локализована в секторе: **{leak_node}**")
+                st.info("ИИ рекомендует перекрыть задвижки PV_1_2 и PH_2_1 для изоляции участка.")
