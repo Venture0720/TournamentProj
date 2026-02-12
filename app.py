@@ -143,23 +143,38 @@ if df is not None:
     with tab4:
         st.subheader("🗺 Проекция цифрового двойника сети")
         if wn:
-            fig_map, ax = plt.subplots(figsize=(10, 4))
+            import networkx as nx # WNTR строит графы на базе networkx
             
-            # Цвета узлов
-            node_colors = {}
-            for node_name in wn.node_name_list:
-                if node_name == 'res':
-                    node_colors[node_name] = 'blue'
-                elif node_name == 'node2' and is_leak:
-                    node_colors[node_name] = 'red'
+            fig_map, ax = plt.subplots(figsize=(10, 5))
+            
+            # Получаем граф и координаты
+            graph = wn.get_graph()
+            pos = {node: wn.get_node(node).coordinates for node in wn.node_name_list}
+            
+            # Определяем цвета узлов вручную
+            colors = []
+            for node in wn.node_name_list:
+                if node == 'res':
+                    colors.append('blue')
+                elif node == 'node2' and is_leak:
+                    colors.append('red')
                 else:
-                    node_colors[node_name] = 'green'
+                    colors.append('green')
             
-            # Отрисовка
-            wntr.graphics.plot_network(wn, node_map=node_colors, node_size=150, edge_width=3, ax=ax)
-            ax.set_title("Схема: Резервуар (синий) -> Узел 1 -> Узел 2 (место утечки)")
+            # Рисуем трубы (ребра)
+            nx.draw_networkx_edges(graph, pos, ax=ax, width=3, edge_color='gray')
+            
+            # Рисуем узлы
+            nx.draw_networkx_nodes(graph, pos, ax=ax, node_color=colors, node_size=300)
+            
+            # Добавляем подписи
+            nx.draw_networkx_labels(graph, pos, ax=ax, font_size=10, font_weight='bold', verticalalignment='bottom')
+            
+            ax.set_title("Схема мониторинга: Резервуар (Синий) -> Магистраль -> Узел утечки (Красный)")
+            ax.axis('off') # Убираем лишние оси координат
             st.pyplot(fig_map)
+            
+            if is_leak:
+                st.warning("📍 Локализация: Авария подтверждена гидравлической моделью в узле Node 2")
         else:
             st.info("Проекция доступна только после запуска EPANET симуляции.")
-else:
-    st.info("👋 Выберите источник данных в боковом меню.")
