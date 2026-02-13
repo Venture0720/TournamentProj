@@ -162,11 +162,10 @@ class PipeMaterial(Enum):
 # MAP CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-@dataclass(frozen=True)
 class MapStyles:
     """Map tile providers and styles"""
     
-    STYLES: Dict[str, Dict] = field(default_factory=lambda: {
+    STYLES: Dict[str, Dict] = {
         "Dark": {
             "url": "https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png",
             "attribution": "© OpenStreetMap contributors © CARTO",
@@ -192,7 +191,7 @@ class MapStyles:
             "attribution": "Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap",
             "name": "Stamen Terrain"
         }
-    })
+    }
     
     DEFAULT_STYLE: str = "Dark"
     DEFAULT_ZOOM: int = 12
@@ -242,7 +241,6 @@ class VisualizationConfig:
 # RISK & CRITICALITY THRESHOLDS
 # ═══════════════════════════════════════════════════════════════════════════
 
-@dataclass(frozen=True)
 class RiskThresholds:
     """Criticality and risk classification thresholds"""
     
@@ -259,13 +257,13 @@ class RiskThresholds:
     MINOR_LEAK_THRESHOLD: float = 0.2
     
     # Alert Levels
-    ALERT_LEVELS: Dict[str, str] = field(default_factory=lambda: {
+    ALERT_LEVELS: Dict[str, str] = {
         "CRITICAL": "#EF4444",
         "HIGH": "#F59E0B",
         "MEDIUM": "#3B82F6",
         "LOW": "#10B981",
         "INFO": "#06B6D4"
-    })
+    }
     
     @classmethod
     def get_risk_class(cls, criticality: float) -> str:
@@ -289,11 +287,10 @@ class RiskThresholds:
 # SIMULATION PRESETS
 # ═══════════════════════════════════════════════════════════════════════════
 
-@dataclass(frozen=True)
 class SimulationPresets:
     """Pre-configured simulation scenarios"""
     
-    SCENARIOS: Dict[str, Dict] = field(default_factory=lambda: {
+    SCENARIOS: Dict[str, Dict] = {
         "Normal Operations": {
             "description": "Routine monitoring with no anomalies",
             "leak_area_cm2": 0.0,
@@ -326,7 +323,7 @@ class SimulationPresets:
             "sensors": 10,
             "soil_temp": 30.0
         }
-    })
+    }
     
     @classmethod
     def get_scenario_names(cls) -> List[str]:
