@@ -41,8 +41,13 @@ class HydraulicPhysics:
     def __init__(self, inputs: SimulationInputs):
         self.inputs = inputs
         self.city_data = CITY.get_city(inputs.city)
+        city_map = {
+            "Almaty": "Алматы",
+            "Astana": "Астана",
+            "Turkistan": "Туркестан",
+        }
         self.hydraulic_engine = HydraulicIntelligenceEngine(
-            city_name=self.inputs.city,
+            city_name=city_map.get(self.inputs.city, "Алматы"),
             season_temp_celsius=10.0,
             material_name=self.inputs.material,
             pipe_age_years=self.inputs.pipe_age,
