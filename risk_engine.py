@@ -626,12 +626,14 @@ class APIResponseBuilder:
     def with_criticality(self, 
                         network_criticality: Dict,
                         high_risk_nodes: List[Dict],
-                        priorities: List[Dict]) -> 'APIResponseBuilder':
+                        priorities: Optional[List[Dict]] = None,
+                        maintenance_priorities: Optional[List[Dict]] = None) -> 'APIResponseBuilder':
         """Add criticality assessment."""
+        resolved_priorities = maintenance_priorities if maintenance_priorities is not None else (priorities or [])
         self.response.criticality_assessment = CriticalitySchema(
             network_criticality=network_criticality,
             high_risk_nodes=high_risk_nodes,
-            maintenance_priorities=priorities
+            maintenance_priorities=resolved_priorities
         )
         return self
     
