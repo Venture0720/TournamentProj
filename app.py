@@ -1,148 +1,147 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import networkx as nx
 import plotly.graph_objects as go
-import plotly.express as px
 from datetime import datetime
-import sys
-import os
 
-# 1. ГАРАНТИЯ ИМПОРТА (чтобы модули видели друг друга)
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
-
-# Импорт твоих мощных движков
+# Импорт твоих модулей
 try:
-    from hydraulic_intelligence import HydraulicIntelligenceEngine
-    from leak_analytics import LeakAnalyticsEngine
-    from risk_engine import DigitalTwinEngine, CriticalityIndexCalculator
-    import config
-except ImportError as e:
-    st.error(f"❌ Critical Import Error: {e}")
-    st.stop()
+    from risk_engine import DigitalTwinEngine, SocialImpactFactors
+except ImportError:
+    st.error("Ошибка: Файлы модулей (risk_engine.py и др.) не найдены в папке.")
 
-# 2. ПРОФЕССИОНАЛЬНЫЙ ДИЗАЙН (CSS)
-st.set_page_config(page_title="Smart Shygyn Digital Twin", layout="wide", page_icon="💧")
+# --- КОНФИГУРАЦИЯ СТРАНИЦЫ ---
+st.set_page_config(
+    page_title="Smart Shygyn | Digital Twin",
+    page_icon="💧",
+    layout="wide"
+)
 
+# --- ИНИЦИАЛИЗАЦИЯ ДВИЖКА ---
+if 'twin' not in st.session_state:
+    st.session_state.twin = None
+
+# --- СТИЛИЗАЦИЯ ---
 st.markdown("""
-<style>
-    .main-header { font-size: 2.2rem; font-weight: 800; color: #0D47A1; text-align: center; margin-bottom: 2rem; }
-    .metric-box { background: #f8f9fa; border-left: 5px solid #1976D2; padding: 20px; border-radius: 8px; }
-    .status-ok { color: #2E7D32; font-weight: bold; }
-    .status-warn { color: #E64A19; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    </style>
+    """, unsafe_allow_html=True)
 
-# 3. ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ (Чтобы данные не сбрасывались)
-if 'engine_results' not in st.session_state:
-    st.session_state.engine_results = None
-if 'last_sim_time' not in st.session_state:
-    st.session_state.last_sim_time = None
-
-# 4. SIDEBAR - ПАНЕЛЬ УПРАВЛЕНИЯ
+# --- SIDEBAR: УПРАВЛЕНИЕ ---
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/water-pipe.png", width=80)
-    st.title("Control Center")
+    st.title("Smart Shygyn v3.0")
+    st.subheader("Параметры системы")
     
-    selected_city = st.selectbox("Локация", ["Astana (Left Bank)", "Almaty (District 4)"])
-    grid_res = st.select_slider("Детализация сети", options=["Low", "Medium", "High"])
+    city = st.selectbox("Регион (Казахстан)", ["Астана", "Алматы", "Туркестан"])
+    material = st.selectbox("Материал магистрали", ["Пластик (ПНД)", "Сталь", "Чугун"])
+    age = st.slider("Возраст труб (лет)", 0, 60, 25)
+    temp = st.slider("Температура среды (°C)", -30, 40, 10)
     
     st.divider()
     st.subheader("Симуляция инцидентов")
-    is_leak = st.toggle("Имитировать утечку", value=False)
-    leak_size = st.slider("Размер прорыва (см²)", 0.1, 10.0, 1.0) if is_leak else 0
+    grid_size = st.slider("Размер сетки (N x N)", 2, 6, 4)
+    leak_enabled = st.toggle("Активировать утечку", value=True)
+    leak_node = st.text_input("Узел утечки (напр. N_2_2)", "N_2_2")
     
-    run_btn = st.button("🚀 ЗАПУСТИТЬ ЦИФРОВОЙ ДВОЙНИК", type="primary", use_container_width=True)
+    if st.button("🚀 ЗАПУСТИТЬ ЦИФРОВОЙ ДВОЙНИК", use_container_width=True):
+        st.session_state.twin = DigitalTwinEngine(
+            city=city, 
+            season_temp_celsius=temp, 
+            material=material, 
+            pipe_age=age
+        )
+        # Запуск анализа
+        st.session_state.analysis = st.session_state.twin.run_complete_analysis(
+            grid_size=grid_size,
+            leak_node=leak_node if leak_enabled else None
+        )
 
-# 5. ОСНОВНАЯ ЛОГИКА ОРКЕСТРАТОРА
-st.markdown('<div class="main-header">Smart Shygyn: Digital Twin Management System</div>', unsafe_allow_html=True)
-
-if run_btn:
-    with st.spinner("⏳ Синхронизация движков и расчет гидравлики..."):
-        try:
-            # ШАГ 1: Гидравлика (Physics Layer)
-            hydro_engine = HydraulicIntelligenceEngine()
-            # Предполагаем метод симуляции возвращает объект с данными
-            h_data = hydro_engine.run_simulation(grid_res) 
-            
-            # ШАГ 2: Анализ утечек (Analytics Layer)
-            leak_engine = LeakAnalyticsEngine()
-            l_results = leak_engine.analyze_anomalies(h_data, simulated_leak=is_leak)
-            
-            # ШАГ 3: Риски и Экономика (Business Layer)
-            risk_calc = CriticalityIndexCalculator()
-            r_results = risk_calc.calculate_financial_impact(h_data, l_results)
-            
-            # Сохраняем всё в сессию
-            st.session_state.engine_results = {
-                'hydraulic': h_data,
-                'leaks': l_results,
-                'risks': r_results
-            }
-            st.session_state.last_sim_time = datetime.now().strftime("%H:%M:%S")
-            st.toast("Симуляция завершена успешно!")
-            
-        except Exception as e:
-            st.error(f"Ошибка в логике движка: {e}")
-            st.info("Проверьте названия методов в ваших .py файлах")
-
-# 6. ВИЗУАЛИЗАЦИЯ (TABS)
-if st.session_state.engine_results:
-    res = st.session_state.engine_results
-    
-    t1, t2, t3, t4 = st.tabs(["📊 Мониторинг", "🔍 Детектор утечек", "🛡️ Карта рисков", "💰 Экономика"])
-    
-    with t1:
-        st.subheader(f"Текущее состояние сети (Обновлено: {st.session_state.last_sim_time})")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        # Данные берутся из Hydraulic Intelligence
-        col1.metric("Ср. Давление", "3.8 bar", "0.2")
-        col2.metric("Расход", "1,240 m³/h", "-12 m³")
-        col3.metric("Энергопотребление", "42 kW", "Стабильно")
-        col4.metric("Water Health Index", "92%", "-1%", delta_color="inverse")
-        
-        # График давления (Plotly)
-        fig_p = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = 3.8,
-            title = {'text': "Pressure Status (Bar)"},
-            gauge = {'axis': {'range': [None, 10]}, 'bar': {'color': "darkblue"}}
-        ))
-        st.plotly_chart(fig_p, use_container_width=True)
-
-    with t2:
-        st.subheader("Анализ аномалий и Виртуальные датчики")
-        if is_leak:
-            st.warning(f"⚠️ ОБНАРУЖЕНА УТЕЧКА: Сектор {selected_city}. Вероятная точка: Узел N-204")
-            st.error(f"Потеря воды: {leak_size * 1.5:.1f} литров в секунду")
-        else:
-            st.success("✅ Система работает в штатном режиме. Аномалий не выявлено.")
-        
-        # Здесь вставляется heatmap из leak_analytics.py
-        st.info("Интерактивная карта утечек генерируется на основе IDW интерполяции...")
-
-    with t3:
-        st.subheader("Индекс критичности инфраструктуры")
-        # Данные из Risk Engine
-        st.write("Топ-5 участков с высоким риском прорыва:")
-        risk_df = pd.DataFrame({
-            'ID Трубы': ['P-101', 'P-202', 'P-054', 'P-112', 'P-088'],
-            'Вероятность отказа': [0.85, 0.72, 0.61, 0.45, 0.38],
-            'Социальная значимость': ['Высокая (Школа)', 'Средняя', 'Высокая (Больница)', 'Низкая', 'Средняя']
-        })
-        st.table(risk_df)
-
-    with t4:
-        st.subheader("Бизнес-аналитика (ROI)")
-        st.markdown(f"""
-        <div class="metric-box">
-            <h4>Прогнозируемые потери: <span style="color:red">340,000 KZT / месяц</span></h4>
-            <p>Внедрение системы Smart Shygyn позволит сократить эти расходы на <b>28%</b> в первый квартал.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+# --- ГЛАВНАЯ ПАНЕЛЬ ---
+if st.session_state.twin is None:
+    st.info("👋 Добро пожаловать! Настройте параметры в боковой панели и нажмите 'Запустить Цифровой Двойник' для начала анализа сети.")
+    st.image("https://images.unsplash.com/photo-1581094794329-c8112a89af12?auto=format&fit=crop&q=80&w=1000", caption="Digital Twin Engine для водоканалов РК")
 else:
-    st.empty()
-    st.info("👋 Добро пожаловать! Выберите параметры в боковой панели и запустите симуляцию для получения полных данных.")
+    res = st.session_state.analysis
+    
+    # 1. МЕТРИКИ ВЕРХНЕГО УРОВНЯ
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Статус системы", res.status, delta=None)
+    with col2:
+        leak_status = "⚠️ ОБНАРУЖЕНО" if res.leak_detection.leak_detected else "✅ НОРМА"
+        st.metric("Детектор утечек", leak_status)
+    with col3:
+        st.metric("Качество воды", res.water_quality.quality_standard)
+    with col4:
+        st.metric("Compliance (РК)", f"{res.water_quality.compliance_percentage}%")
+
+    # 2. ВИЗУАЛИЗАЦИЯ СЕТИ (ГРАФ)
+    st.subheader("Интерактивная топология сети")
+    
+    # Генерация визуализации графа через Plotly
+    fig = go.Figure()
+    # (Здесь логика отрисовки узлов и ребер из res.network_topology)
+    # Для краткости выводим уведомление о зонах риска
+    st.info(f"Анализ завершен для {res.city}. Обнаружено узлов: {res.water_quality.avg_age_hours} ч. (средний возраст воды).")
+    
+    # 3. АНАЛИТИЧЕСКИЕ ВКЛАДКИ
+    tab1, tab2, tab3, tab4 = st.tabs(["💧 Гидравлика & Утечки", "🧪 Качество & Хлор", "⚖️ Риски & Критичность", "📄 Отчет API"])
+    
+    with tab1:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.write("**Анализ ночного потока (MNF):**")
+            # Симуляция графика MNF
+            chart_data = pd.DataFrame(np.random.normal(0.4, 0.05, size=(24, 1)), columns=['Flow (L/s)'])
+            if res.leak_detection.leak_detected:
+                chart_data.iloc[2:6] += res.leak_detection.estimated_flow_lps
+            st.line_chart(chart_data)
+        with c2:
+            st.json(res.leak_detection.mnf_analysis)
+            st.metric("Эст. поток утечки", f"{res.leak_detection.estimated_flow_lps} L/s")
+
+    with tab2:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.write("**Распад хлора (First-order decay):**")
+            # Визуализация твоей формулы из Part 3
+            time_axis = np.linspace(0, 48, 100)
+            chlorine = 0.5 * np.exp(-0.05 * time_axis)
+            fig_cl = px.line(x=time_axis, y=chlorine, labels={'x':'Часы', 'y':'Cl (mg/L)'}, title="Прогноз дезинфекции")
+            fig_cl.add_hline(y=0.2, line_dash="dash", line_color="red", annotation_text="Стандарт РК (0.2)")
+            st.plotly_chart(fig_cl, use_container_width=True)
+        with col_b:
+            st.write("**Зоны застоя:**")
+            st.table(res.water_quality.stagnation_zones)
+
+    with tab3:
+        st.write("**План приоритетного обслуживания:**")
+        crit_df = pd.DataFrame(res.criticality_assessment.maintenance_priorities)
+        if not crit_df.empty:
+            st.dataframe(crit_df[['node', 'criticality_index', 'risk_class', 'priority']], use_container_width=True)
+        
+        st.write("**Рекомендация системы:**")
+        for rec in res.recommendations:
+            st.success(f"💡 {rec}")
+
+    with tab4:
+        st.write("Сгенерированный API Response (JSON):")
+        st.json(res.to_dict())
+
+    # 4. АЛЕРТЫ
+    if res.alerts:
+        st.sidebar.divider()
+        st.sidebar.subheader("🔔 Уведомления")
+        for alert in res.alerts:
+            if alert['level'] == "CRITICAL":
+                st.sidebar.error(f"{alert['message']} (Узел: {alert['node']})")
+            else:
+                st.sidebar.warning(alert['message'])
+
+# --- FOOTER ---
+st.divider()
+st.caption(f"Smart Shygyn Digital Twin Core | API v3.0.0 | {datetime.now().year} Astana Hub Competition")
