@@ -15,7 +15,6 @@ from typing import Optional, Dict, List
 import json
 
 # Import backend modules
-from main_app import DigitalTwinEngine
 from config import (
     COLORS, METADATA, CONSTRAINTS, CITIES, MAPS, VIZ, RISK, PRESETS,
     get_temperature_emoji, get_status_emoji, format_number, get_severity_label
