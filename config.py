@@ -328,10 +328,9 @@ class SimulationPresets:
         }
     })
     
-    @classmethod
-    def get_scenario_names(cls) -> List[str]:
+    def get_scenario_names(self) -> List[str]:
         """Return list of scenario names"""
-        return list(cls.SCENARIOS.keys())
+        return list(self.SCENARIOS.keys())
 
 
 # ═══════════════════════════════════════════════════════════════════════════
