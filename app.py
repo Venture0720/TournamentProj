@@ -3,41 +3,35 @@ import pandas as pd
 import numpy as np
 import os
 
-# Проверка наличия файлов перед импортом (для отладки в логах)
-files_in_dir = os.listdir('.')
-st.write(f"Файлы в директории: {files_in_dir}") # Это поможет увидеть реальные имена в облаке
+# 1. Настройка страницы
+st.set_page_config(page_title="Digital Twin Dashboard", layout="wide")
 
+# Проверка наличия файлов (для отладки)
+files_in_dir = os.listdir('.')
+st.sidebar.write(f"📁 Файлы в системе: {files_in_dir}")
+
+# 2. Безопасный импорт бэкенда
 try:
-    # Проверь, что файл на GitHub называется именно risk_engine.py (маленькими буквами)
     from risk_engine import DigitalTwinEngine, DigitalTwinAPIResponse
     from hydraulic_intelligence import HydraulicIntelligenceEngine
     from leak_analytics import LeakAnalyticsEngine
 except ImportError as e:
     st.error(f"❌ Ошибка импорта модуля: {e}")
-    st.info("Проверьте, что файлы risk_engine.py, hydraulic_intelligence.py и leak_analytics.py лежат в корне репозитория.")
     st.stop()
+
+# 3. Классы настроек и оркестратора
 class GlobalSettings:
-    """Все настройки проекта в одном месте (замена config.py)"""
-    CHLORINE_THRESHOLD = 0.2  # мг/л (норма РК)
-    CRITICAL_PRESSURE = 2.0    # бар
+    CHLORINE_THRESHOLD = 0.2
     CITY_DATA = {
         "Astana": {"temp": 5, "soil": "clay"},
         "Almaty": {"temp": 12, "soil": "rocky"},
         "Turkestan": {"temp": 18, "soil": "sandy"}
     }
-    COLORS = {"primary": "#1E3A8A", "danger": "#EF4444", "success": "#10B981"}
 
 class MasterOrchestrator:
-    """
-    Класс-интегратор. 
-    Сюда интерфейс будет подавать вводные данные, 
-    а на выходе получать полный отчет.
-    """
     def __init__(self, city: str, pipe_material: str, pipe_age: int):
         self.settings = GlobalSettings()
         self.city_info = self.settings.CITY_DATA.get(city, self.settings.CITY_DATA["Astana"])
-        
-        # Инициализируем главный движок из Part 3
         self.engine = DigitalTwinEngine(
             city=city,
             season_temp=self.city_info["temp"],
@@ -46,30 +40,64 @@ class MasterOrchestrator:
         )
 
     def compute_full_cycle(self, grid_size: int, leak_node: int, leak_size: float) -> DigitalTwinAPIResponse:
-        """
-        Запуск полной цепочки анализа без потери деталей:
-        1. Гидравлика (Part 1)
-        2. Утечки (Part 2) 
-        3. Риски и Хлор (Part 3)
-        """
         try:
-            # Вызываем метод, который ты отлаживал в Part 3
-            result = self.engine.run_complete_analysis(
+            return self.engine.run_complete_analysis(
                 grid_size=grid_size,
                 leak_node=leak_node,
                 leak_area_cm2=leak_size,
                 n_sensors=max(2, grid_size // 2)
             )
-            return result
         except Exception as e:
-            print(f"Критическая ошибка интеграции: {e}")
+            st.error(f"Ошибка в расчетах: {e}")
             return None
 
-# Пример запуска для проверки (можно удалить при подключении UI)
-if __name__ == "__main__":
-    orchestrator = MasterOrchestrator("Astana", "Cast Iron", 35)
-    report = orchestrator.compute_full_cycle(grid_size=5, leak_node=12, leak_size=5.5)
-    if report:
-        print(f"Статус: {report.status}")
-        print(f"Найдена утечка: {report.leak_detection.leak_detected}")
-        print(f"Приоритетов к ремонту: {len(report.criticality_assessment.maintenance_priorities)}")
+# 4. Интерфейс управления (Sidebar)
+with st.sidebar:
+    st.header("⚙️ Управление двойником")
+    city = st.selectbox("Город", list(GlobalSettings.CITY_DATA.keys()))
+    material = st.selectbox("Материал", ["Cast Iron", "HDPE", "Steel"])
+    age = st.slider("Возраст труб", 0, 60, 25)
+    
+    st.markdown("---")
+    grid_size = st.number_input("Размер сети", 5, 20, 10)
+    leak_node = st.number_input("Узел утечки", 0, grid_size**2 - 1, 5)
+    leak_size = st.slider("Размер утечки (см2)", 0.1, 10.0, 2.5)
+
+    if st.button("🚀 Запустить расчет", use_container_width=True):
+        orchestrator = MasterOrchestrator(city, material, age)
+        with st.spinner("Синхронизация с датчиками..."):
+            report = orchestrator.compute_full_cycle(grid_size, leak_node, leak_size)
+            st.session_state.report = report
+
+# 5. Вывод результатов (Твой исправленный блок)
+st.title("🌊 Smart Water Digital Twin")
+
+if "report" in st.session_state and st.session_state.report:
+    res = st.session_state.report
+    
+    try:
+        col1, col2, col3 = st.columns(3)
+        
+        # Безопасное извлечение данных
+        status_val = getattr(res, 'status', 'N/A')
+        leak_data = getattr(res, 'leak_detection', None)
+        is_leak = getattr(leak_data, 'leak_detected', False) if leak_data else False
+        
+        quality_data = getattr(res, 'water_quality', None)
+        chlorine = getattr(quality_data, 'chlorine_residual_mg_l', 0.0) if quality_data else 0.0
+
+        col1.metric("Статус системы", status_val)
+        col2.metric("Детектор утечек", "⚠ ОБНАРУЖЕНА" if is_leak else "✅ НОРМА")
+        col3.metric("Хлор (остаток)", f"{chlorine} мг/л")
+
+        # Дополнительно: Таблица рисков
+        risk_data = getattr(res, 'criticality_assessment', None)
+        if risk_data and hasattr(risk_data, 'maintenance_priorities'):
+            st.subheader("📋 Приоритеты обслуживания")
+            st.table(pd.DataFrame(risk_data.maintenance_priorities))
+            
+    except Exception as e:
+        st.warning(f"Ошибка отображения данных: {e}")
+        st.write("Сырые данные отчета:", res)
+else:
+    st.info("Настройте параметры в боковой панели и нажмите кнопку 'Запустить расчет'.")
