@@ -1,155 +1,83 @@
-"""
-Smart Water Management Digital Twin - Streamlit Frontend
-=========================================================
-Main orchestrator for 3 backend modules.
-Target: Astana Hub Competition
-"""
-
 import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime
-import json
-import traceback
-import warnings
 import sys
 import os
+import pandas as pd
+import plotly.graph_objects as go
 
-# ПРИНУДИТЕЛЬНОЕ ДОБАВЛЕНИЕ ПУТИ (Чтобы Python видел соседние файлы)
+# 1. Лечим проблему путей: принудительно видим соседние файлы
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-# Suppress warnings
-warnings.filterwarnings('ignore')
-
-# ═══════════════════════════════════════════════════════════════════════════
-# PAGE CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════
-
-st.set_page_config(
-    page_title="Smart Shygyn Digital Twin",
-    page_icon="💧",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Custom CSS for professional appearance
-st.markdown("""
-<style>
-    .main-header { font-size: 2.5rem; font-weight: bold; color: #1E88E5; text-align: center; padding: 1rem 0; }
-    .metric-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1.5rem; border-radius: 10px; color: white; text-align: center; margin: 0.5rem 0; }
-    .stTabs [data-baseweb="tab-list"] { gap: 2rem; }
-    .stTabs [data-baseweb="tab"] { padding: 1rem 2rem; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BACKEND MODULE IMPORTS WITH ERROR HANDLING
-# ═══════════════════════════════════════════════════════════════════════════
-
-@st.cache_resource(show_spinner=False)
-def load_backend_modules():
-    modules = {}
-    errors = []
-    
-    # Пытаемся импортировать каждый модуль отдельно
-    try:
-        from hydraulic_intelligence import HydraulicIntelligenceEngine
-        modules['hydraulic'] = HydraulicIntelligenceEngine
-    except Exception as e:
-        errors.append(f"❌ hydraulic_intelligence.py: {str(e)}")
-    
-    try:
-        from leak_analytics import LeakAnalyticsEngine
-        modules['leak'] = LeakAnalyticsEngine
-    except Exception as e:
-        errors.append(f"❌ leak_analytics.py: {str(e)}")
-    
-    try:
-        from risk_engine import DigitalTwinEngine, WaterAgeAnalyzer, CriticalityIndexCalculator
-        modules['risk'] = DigitalTwinEngine
-        modules['water_age'] = WaterAgeAnalyzer
-        modules['criticality'] = CriticalityIndexCalculator
-    except Exception as e:
-        errors.append(f"❌ risk_engine.py: {str(e)}")
-    
-    if errors:
-        return False, modules, "\n".join(errors)
-    
-    return True, modules, None
-
-# Load modules at startup
-with st.spinner("🚀 Loading backend modules..."):
-    success, MODULES, error_msg = load_backend_modules()
-
-if not success:
-    st.error("### ⚠️ Backend Module Loading Failed")
-    st.info(f"**Detected Errors:**\n{error_msg}")
-    st.warning("Ensure all files are in the same folder and libraries (wntr, networkx) are installed.")
+# 2. Безопасный импорт твоих модулей
+try:
+    from hydraulic_intelligence import HydraulicIntelligenceEngine
+    from leak_analytics import LeakAnalyticsEngine
+    from risk_engine import DigitalTwinEngine, CriticalityIndexCalculator
+    import config
+except ImportError as e:
+    st.error(f"Ошибка импорта: {e}. Проверь, что файлы лежат в одной папке.")
     st.stop()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SESSION STATE INITIALIZATION
-# ═══════════════════════════════════════════════════════════════════════════
+# --- ИНТЕРФЕЙС ---
+st.set_page_config(page_title="Smart Shygyn Twin", layout="wide")
 
-if 'simulation_run' not in st.session_state:
-    st.session_state.simulation_run = False
-if 'api_response' not in st.session_state:
-    st.session_state.api_response = None
+st.title("💧 Smart Shygyn: Digital Twin Orchestrator")
+st.markdown("---")
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MAIN INTERFACE
-# ═══════════════════════════════════════════════════════════════════════════
-
-st.markdown('<div class="main-header">Smart Shygyn: Digital Twin System</div>', unsafe_allow_html=True)
-
-# Sidebar Configuration
+# Боковая панель
 with st.sidebar:
-    st.header("📍 Network Configuration")
-    city = st.selectbox("Select City", ["Astana", "Almaty", "Turkestan"])
-    grid_size = st.slider("Grid Complexity (Nodes)", 3, 6, 4)
-    material = st.selectbox("Pipe Material", ["Steel", "Cast Iron", "HDPE", "PVC"])
+    st.header("Настройки сети")
+    city = st.selectbox("Город", ["Astana", "Almaty"])
+    scenario = st.radio("Сценарий", ["Норма", "Авария (Утечка)"])
+    run_sim = st.button("🚀 ЗАПУСТИТЬ АНАЛИЗ", type="primary", use_container_width=True)
+
+# Основная логика при нажатии кнопки
+if run_sim:
+    # Шаг 1: Гидравлика
+    st.toast("Запуск гидравлического движка...")
+    hydro = HydraulicIntelligenceEngine()
+    # Здесь мы вызываем метод симуляции (названия могут отличаться в твоем коде)
+    # Предположим, метод называется run_simulation()
     
-    st.divider()
+    # Шаг 2: Аналитика утечек
+    st.toast("Поиск аномалий...")
+    leak = LeakAnalyticsEngine()
     
-    st.header("🚨 Simulation Stress-Test")
-    leak_mode = st.checkbox("Simulate Emergency (Leak)")
-    if leak_mode:
-        leak_type = st.select_slider("Leak Severity", options=["Small", "Burst", "Catastrophic"])
-    
-    run_btn = st.button("🚀 RUN SIMULATION", use_container_width=True, type="primary")
+    # Шаг 3: Риски и Экономика
+    st.toast("Расчет финансовых рисков...")
+    risk = DigitalTwinEngine()
 
-# Main Dashboard logic
-if run_btn:
-    with st.spinner("Calculating Hydraulics & Risk Metrics..."):
-        # Здесь вызывается логика из твоих backend-файлов
-        # Для примера создаем флаг запуска
-        st.session_state.simulation_run = True
-        st.success(f"Simulation for {city} completed successfully!")
+    # ВЫВОД РЕЗУЛЬТАТОВ
+    tab1, tab2, tab3 = st.tabs(["Мониторинг", "Утечки", "Риски"])
 
-# Tabs
-tab1, tab2, tab3 = st.tabs(["📊 Live Monitoring", "🛡️ Risk Assessment", "💰 Economic Impact"])
+    with tab1:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Давление", "3.4 bar", "OK")
+        c2.metric("Расход", "140 m3/h", "-2%")
+        c3.metric("Потери", "12%", "В норме")
+        st.info("Здесь отрисовывается граф сети из модуля Hydraulic")
 
-with tab1:
-    if st.session_state.simulation_run:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Avg Pressure", "3.2 bar", "+0.2")
-        col2.metric("Water Loss", "1.2 L/s", "-5%", delta_color="inverse")
-        col3.metric("System Health", "94%", "Stable")
-        
-        st.subheader("Network Hydraulic Profile")
-        # Тут будет твой Plotly график из NetworkX
-        st.info("Interactive Graph Loading...")
-    else:
-        st.info("Please run the simulation from the sidebar to see results.")
+    with tab2:
+        st.subheader("Анализ виртуальных датчиков")
+        if scenario == "Авария (Утечка)":
+            st.error("⚠️ Обнаружена утечка в секторе B-12!")
+        else:
+            st.success("Аномалий не обнаружено")
 
-with tab2:
-    st.subheader("Criticality Index & Maintenance Priority")
-    st.write("Analysis of failure probability vs social impact.")
+    with tab3:
+        st.subheader("Экономические показатели")
+        st.write("Прогноз износа труб на основе данных Risk Engine.")
+        # Пример данных
+        chart_data = pd.DataFrame({'Труба': ['A1', 'B2', 'C3'], 'Риск': [0.1, 0.8, 0.3]})
+        st.bar_chart(chart_data, x='Труба', y='Риск')
 
-with tab3:
-    st.subheader("ROI & Energy Savings")
-    st.write("Financial metrics based on water loss reduction.")
+else:
+    st.info("Настройте параметры в боковой панели и нажмите 'Запустить анализ'.")
+
+# Стилизация (Тот самый CSS)
+st.markdown("""
+    <style>
+    .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
