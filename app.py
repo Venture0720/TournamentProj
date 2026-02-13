@@ -9,7 +9,7 @@ st.write(f"Файлы в директории: {files_in_dir}") # Это пом�
 
 try:
     # Проверь, что файл на GitHub называется именно risk_engine.py (маленькими буквами)
-    from risk_engine import RiskEngine, DigitalTwinEngine, DigitalTwinAPIResponse
+    from risk_engine import DigitalTwinEngine, DigitalTwinAPIResponse
     from hydraulic_intelligence import HydraulicIntelligenceEngine
     from leak_analytics import LeakAnalyticsEngine
 except ImportError as e:
