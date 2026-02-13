@@ -49,7 +49,7 @@ def build_map_cached(city_name: str, graph_nodes: Dict[str, Tuple[float, float]]
 
 
 def render_sidebar():
-    st.sidebar.markdown("## \ud83e\uddea Simulation Controls")
+    st.sidebar.markdown("## Simulation Controls")
     city = st.sidebar.selectbox("City", CITY.list_cities())
     material = st.sidebar.selectbox("Pipe Material", ["Пластик (ПНД)", "Сталь", "Чугун", "ПВХ", "Асбестоцемент"])
     pipe_age = st.sidebar.slider("Pipe Age (years)", 1, 60, 20)
