@@ -7,6 +7,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
+from typing import Dict, Tuple
 
 from config import APP, UI, VIZ, MAPS, CITY, get_custom_css
 from backend import SimulationInputs, DigitalTwinBackend, build_network_risk_map
