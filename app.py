@@ -1,13 +1,21 @@
-import numpy as np
+import streamlit as st
 import pandas as pd
-from typing import List, Dict, Optional
-from dataclasses import dataclass
+import numpy as np
+import os
 
-# Импортируем твои наработки (убедись, что названия файлов совпадают)
-from hydraulic_intelligence import HydraulicIntelligenceEngine
-from leak_analytics import LeakAnalyticsEngine
-from risk_engine import RiskEngine, DigitalTwinEngine, DigitalTwinAPIResponse
+# Проверка наличия файлов перед импортом (для отладки в логах)
+files_in_dir = os.listdir('.')
+st.write(f"Файлы в директории: {files_in_dir}") # Это поможет увидеть реальные имена в облаке
 
+try:
+    # Проверь, что файл на GitHub называется именно risk_engine.py (маленькими буквами)
+    from risk_engine import RiskEngine, DigitalTwinEngine, DigitalTwinAPIResponse
+    from hydraulic_intelligence import HydraulicIntelligenceEngine
+    from leak_analytics import LeakAnalyticsEngine
+except ImportError as e:
+    st.error(f"❌ Ошибка импорта модуля: {e}")
+    st.info("Проверьте, что файлы risk_engine.py, hydraulic_intelligence.py и leak_analytics.py лежат в корне репозитория.")
+    st.stop()
 class GlobalSettings:
     """Все настройки проекта в одном месте (замена config.py)"""
     CHLORINE_THRESHOLD = 0.2  # мг/л (норма РК)
