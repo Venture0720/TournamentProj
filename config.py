@@ -8,7 +8,7 @@ from typing import Dict
 class AppConfig:
     """Application-wide configuration."""
     
-    # Visual Theme
+    # Visual Theme (Tailwind-like colors)
     PRIMARY_COLOR = "#1E3A8A"      # Deep Blue
     SECONDARY_COLOR = "#06B6D4"    # Cyan
     ACCENT_COLOR = "#3B82F6"       # Blue
