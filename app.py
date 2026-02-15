@@ -20,6 +20,7 @@ import matplotlib.patches as mpatches
 import networkx as nx
 from datetime import datetime
 import random
+import gc
 
 # Import backend classes (assumes backend.py is in same directory)
 from backend import (
@@ -1303,32 +1304,31 @@ def main():
     
     # Run simulation if button clicked
     if config["run_simulation"]:
-    # ========================================================================
-    # MEMORY CLEANUP: Clear previous simulation to prevent memory leaks
-    # ========================================================================
-    if "simulation_results" in st.session_state and st.session_state["simulation_results"]:
-        old_results = st.session_state["simulation_results"]
+        # ========================================================================
+        # MEMORY CLEANUP: Clear previous simulation to prevent memory leaks
+        # ========================================================================
+        if "simulation_results" in st.session_state and st.session_state["simulation_results"]:
+            old_results = st.session_state["simulation_results"]
+            
+            # Delete large objects explicitly
+            if "network" in old_results:
+                del old_results["network"]  # WNTR network object (~100-500 KB)
+            if "dataframe" in old_results:
+                del old_results["dataframe"]  # Pandas DataFrame
+            
+            # Clear the entire results dict
+            del old_results
+            st.session_state["simulation_results"] = None
+            
+            # Force garbage collection (optional but recommended)
+            gc.collect()
         
-        # Delete large objects explicitly
-        if "network" in old_results:
-            del old_results["network"]  # WNTR network object (~100-500 KB)
-        if "dataframe" in old_results:
-            del old_results["dataframe"]  # Pandas DataFrame
+        # ========================================================================
+        # NOW PROCEED WITH NEW SIMULATION
+        # ========================================================================
         
-        # Clear the entire results dict
-        del old_results
-        st.session_state["simulation_results"] = None
-        
-        # Force garbage collection (optional but recommended)
-        import gc
-        gc.collect()
-    
-    # ========================================================================
-    # NOW PROCEED WITH NEW SIMULATION
-    # ========================================================================
-    
-    # Determine leak node
-    if config["leak_node"] is None:
+        # Determine leak node
+        if config["leak_node"] is None:
             # Random leak location
             grid_size = 4
             i = random.randint(0, grid_size - 1)
@@ -1363,17 +1363,19 @@ def main():
         # Store results
         st.session_state["simulation_results"] = results
         st.session_state["last_run_params"] = config
+        
         # Check for simulation errors
-if "error" in results:
-    st.sidebar.error(
-        f"⚠️ **SIMULATION FAILED**\n\n"
-        f"Error: {results['error']}\n\n"
-        f"Using fallback data for visualization. "
-        f"Adjust parameters and try again."
-    )
-    st.session_state["simulation_error"] = results["error"]
-else:
-    st.session_state["simulation_error"] = None
+        if "error" in results:
+            st.sidebar.error(
+                f"⚠️ **SIMULATION FAILED**\n\n"
+                f"Error: {results['error']}\n\n"
+                f"Using fallback data for visualization. "
+                f"Adjust parameters and try again."
+            )
+            st.session_state["simulation_error"] = results["error"]
+        else:
+            st.session_state["simulation_error"] = None
+        
         # Log operation
         log_entry = (
             f"[{datetime.now().strftime('%H:%M:%S')}] "
