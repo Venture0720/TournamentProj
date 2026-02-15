@@ -204,25 +204,35 @@ class HydraulicPhysics:
     }
     
     @staticmethod
-    def hazen_williams_roughness(material: str, age_years: float) -> float:
-        """
-        Calculate degraded Hazen-Williams C-factor.
+    @staticmethod
+def hazen_williams_roughness(material: str, age_years: float, 
+                            temperature_celsius: float = 10.0) -> float:
+    """
+    Calculate degraded Hazen-Williams C-factor with temperature correction.
+    
+    C_effective = (C_base - age_degradation) × temperature_correction
+    
+    Args:
+        material: Pipe material type
+        age_years: Pipe age in years
+        temperature_celsius: Water temperature (default 10°C)
         
-        C_current = C_base - (age × decay_rate)
-        Minimum C = 40 (extremely rough pipe)
-        
-        Args:
-            material: Pipe material type
-            age_years: Pipe age in years
-            
-        Returns:
-            Hazen-Williams C coefficient
-        """
-        base_c = HydraulicPhysics.HAZEN_WILLIAMS_BASE.get(material, 130.0)
-        decay = HydraulicPhysics.DECAY_RATE.get(material, 0.30)
-        
-        current_c = base_c - (decay * age_years)
-        return max(40.0, current_c)
+    Returns:
+        Temperature-corrected Hazen-Williams C coefficient
+    """
+    # Step 1: Base roughness
+    base_c = HydraulicPhysics.HAZEN_WILLIAMS_BASE.get(material, 130.0)
+    
+    # Step 2: Age degradation
+    decay = HydraulicPhysics.DECAY_RATE.get(material, 0.30)
+    aged_c = base_c - (decay * age_years)
+    aged_c = max(40.0, aged_c)  # Floor at 40
+    
+    # Step 3: Temperature correction
+    temp_factor = HydraulicPhysics.temperature_correction_factor(temperature_celsius)
+    effective_c = aged_c * temp_factor
+    
+    return max(40.0, effective_c)  # Ensure minimum roughness
     
     @staticmethod
     def degradation_percentage(material: str, age_years: float) -> float:
@@ -237,6 +247,41 @@ class HydraulicPhysics:
         
         degradation = (1.0 - current_c / base_c) * 100.0
         return max(0.0, min(100.0, degradation))
+        @staticmethod
+def temperature_correction_factor(temperature_celsius: float) -> float:
+    """
+    Calculate roughness correction factor based on temperature.
+    
+    Physics: Cold water has higher viscosity → increased friction → lower effective C-factor
+    - At 10°C: No correction (factor = 1.0)
+    - Below 10°C: C-factor reduced by 1% per 5°C drop
+    - Above 10°C: C-factor increased by 0.5% per 5°C rise (marginal effect)
+    
+    Args:
+        temperature_celsius: Water temperature
+        
+    Returns:
+        Correction factor (0.8 to 1.1)
+        
+    Example:
+        T = -10°C: factor = 1.0 - (10-(-10))/5 * 0.01 = 1.0 - 0.04 = 0.96
+        T = 0°C:   factor = 1.0 - (10-0)/5 * 0.01 = 1.0 - 0.02 = 0.98
+        T = 20°C:  factor = 1.0 + (20-10)/5 * 0.005 = 1.0 + 0.01 = 1.01
+    """
+    BASE_TEMP = 10.0  # Reference temperature (°C)
+    
+    if temperature_celsius < BASE_TEMP:
+        # Cold water: reduce C-factor (1% per 5°C below 10°C)
+        delta = BASE_TEMP - temperature_celsius
+        reduction = (delta / 5.0) * 0.01
+        factor = 1.0 - reduction
+        return max(0.80, factor)  # Floor at 80% (extreme cold)
+    else:
+        # Warm water: slight increase (0.5% per 5°C above 10°C)
+        delta = temperature_celsius - BASE_TEMP
+        increase = (delta / 5.0) * 0.005
+        factor = 1.0 + increase
+        return min(1.10, factor)  # Ceiling at 110% (extreme heat)
     
     @staticmethod
     def torricelli_leak_flow(area_m2: float, head_m: float, 
@@ -405,7 +450,9 @@ class HydraulicEngine:
         wn = wntr.network.WaterNetworkModel()
         
         # Material properties
-        roughness = self.physics.hazen_williams_roughness(material, pipe_age)
+        # Get current temperature from city manager
+current_temp = self.city.season_temp if hasattr(self.city, 'season_temp') else 10.0
+roughness = self.physics.hazen_williams_roughness(material, pipe_age, current_temp)
         
         # Demand pattern
         demand_pattern = self.physics.create_demand_pattern()
@@ -501,9 +548,91 @@ class HydraulicEngine:
         
         return wn
     
-    def run_simulation(self, 
-                      wn: wntr.network.WaterNetworkModel,
-                      sampling_rate_hz: int = 1) -> Dict[str, pd.DataFrame]:
+def run_simulation(self, 
+                  wn: wntr.network.WaterNetworkModel,
+                  sampling_rate_hz: int = 1) -> Dict[str, pd.DataFrame]:
+    """
+    Run EPANET simulation and extract results with robust error handling.
+    
+    Args:
+        wn: WNTR network model
+        sampling_rate_hz: Sensor sampling frequency (samples per hour)
+        
+    Returns:
+        Dictionary with 'pressure', 'flow', 'quality' DataFrames
+        Returns fallback data if simulation fails
+    """
+    # Adjust report timestep based on sampling rate
+    wn.options.time.report_timestep = int(3600 / sampling_rate_hz)
+    
+    try:
+        # Run simulation
+        sim = wntr.sim.EpanetSimulator(wn)
+        results = sim.run_sim()
+        
+        # Validate results - check for NaN (convergence failure indicator)
+        if results.node["pressure"].isna().any().any():
+            raise ValueError("Simulation produced NaN pressures - EPANET convergence failure")
+        
+        # Check for negative pressures (unphysical)
+        min_pressure = results.node["pressure"].min().min()
+        if min_pressure < -1.0:
+            raise ValueError(f"Negative pressure detected: {min_pressure:.2f}m - check network design")
+        
+        # Extract and convert units
+        pressure_bar = results.node["pressure"] * 0.1  # m to bar (approx)
+        flow_lps = results.link["flowrate"] * 1000.0  # m³/s to L/s
+        age_hours = results.node["quality"] / 3600.0  # seconds to hours
+        
+        return {
+            "pressure": pressure_bar,
+            "flow": flow_lps,
+            "age": age_hours,
+        }
+        
+    except Exception as e:
+        # Log error details
+        error_msg = str(e)
+        print(f"[WNTR ERROR] Simulation failed: {error_msg}")
+        
+        # Create fallback results (safe dummy data to prevent UI crash)
+        num_nodes = len(wn.node_name_list)
+        num_links = len(wn.link_name_list)
+        num_timesteps = 24  # 24 hours
+        
+        # Generate timestamps
+        timestamps = pd.date_range(start="2024-01-01", periods=num_timesteps, freq="H")
+        
+        # Fallback pressure: constant 3.0 bar (safe operating pressure)
+        fallback_pressure = pd.DataFrame(
+            data=3.0,
+            index=timestamps,
+            columns=wn.node_name_list
+        )
+        
+        # Fallback flow: constant 5.0 L/s (typical baseline)
+        fallback_flow = pd.DataFrame(
+            data=5.0,
+            index=timestamps,
+            columns=wn.link_name_list
+        )
+        
+        # Fallback water age: constant 2.0 hours
+        fallback_age = pd.DataFrame(
+            data=2.0,
+            index=timestamps,
+            columns=wn.node_name_list
+        )
+        
+        # Store error in results for UI display
+        self._last_error = error_msg
+        
+        return {
+            "pressure": fallback_pressure,
+            "flow": fallback_flow,
+            "age": fallback_age,
+            "error": error_msg,  # Add error flag
+        }
         """
         Run EPANET simulation and extract results.
         
@@ -1241,7 +1370,9 @@ class SmartShygynBackend:
             },
             "material": material,
             "pipe_age": pipe_age,
-            "roughness": HydraulicPhysics.hazen_williams_roughness(material, pipe_age),
+            "roughness": HydraulicPhysics.hazen_williams_roughness(
+    material, pipe_age, self.city_manager.season_temp
+),
             "degradation_pct": degradation_pct,
         }
 
