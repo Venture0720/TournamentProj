@@ -737,6 +737,13 @@ def render_sidebar():
 
     st.sidebar.markdown("---")
 
+    # Safe defaults — will be overwritten inside the City Selection expander.
+    # Defined here so that the Network Parameters expander (which references
+    # season_temp for the live roughness preview) never hits a NameError,
+    # even if the City Selection expander is collapsed on the very first load.
+    season_temp = st.session_state.get("season_temp", 10.0)
+    frost_mult  = get_frost_multiplier(season_temp)
+
     # ── City selection ────────────────────────────────────────────────────
     with st.sidebar.expander("🏙️ City Selection", expanded=True):
         city_name = st.selectbox(
@@ -769,6 +776,7 @@ def render_sidebar():
                 )
 
             season_temp = temperature
+            st.session_state["season_temp"] = season_temp
 
             if st.button("🔄 Refresh Weather", use_container_width=True, key="refresh_weather_btn"):
                 from weather import clear_weather_cache
@@ -782,6 +790,7 @@ def render_sidebar():
                 help="Manual override for scenario testing"
             )
             frost_mult = get_frost_multiplier(season_temp)
+            st.session_state["season_temp"] = season_temp
             if frost_mult > 1.0:
                 st.warning(f"🧊 **Frost Risk**: ×{frost_mult:.2f} multiplier active")
 
