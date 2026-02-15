@@ -1244,12 +1244,12 @@ def main():
     # Initialize session state FIRST
     init_session_state()
     
-    # Apply CSS theme IMMEDIATELY (before any other rendering)
-    css_to_apply = DARK_CSS if st.session_state.get("dark_mode", True) else LIGHT_CSS
-    st.markdown(css_to_apply, unsafe_allow_html=True)
-    
-    # Render sidebar and get config
+    # Render sidebar and get config (this updates dark_mode in session state)
     config = render_sidebar()
+    
+    # Apply CSS theme AFTER sidebar renders (so we have the correct toggle value)
+    css_to_apply = DARK_CSS if config["dark_mode"] else LIGHT_CSS
+    st.markdown(css_to_apply, unsafe_allow_html=True)
     
     # Run simulation if button clicked
     if config["run_simulation"]:
