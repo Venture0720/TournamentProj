@@ -1148,10 +1148,17 @@ def render_sidebar():
         )
         
         # Show calculated roughness
-        roughness = HydraulicPhysics.hazen_williams_roughness(material, pipe_age)
-        degradation = HydraulicPhysics.degradation_percentage(material, pipe_age)
-        st.caption(f"**H-W Roughness C:** {roughness:.1f}")
-        st.caption(f"**Degradation:** {degradation:.1f}%")
+        # Show calculated roughness with temperature correction
+roughness = HydraulicPhysics.hazen_williams_roughness(
+    material, pipe_age, season_temp
+)
+base_roughness = HydraulicPhysics.HAZEN_WILLIAMS_BASE[material]
+degradation = HydraulicPhysics.degradation_percentage(material, pipe_age)
+temp_factor = HydraulicPhysics.temperature_correction_factor(season_temp)
+
+st.caption(f"**H-W Roughness C:** {roughness:.1f}")
+st.caption(f"**Base C:** {base_roughness:.0f} → Aged: {base_roughness * (1 - degradation/100):.1f}")
+st.caption(f"**Temp Correction:** ×{temp_factor:.3f} ({season_temp:.1f}°C)")
         
         sampling_rate = st.select_slider(
             "Sensor Sampling Rate",
@@ -1297,8 +1304,32 @@ def main():
     
     # Run simulation if button clicked
     if config["run_simulation"]:
-        # Determine leak node
-        if config["leak_node"] is None:
+    # ========================================================================
+    # MEMORY CLEANUP: Clear previous simulation to prevent memory leaks
+    # ========================================================================
+    if "simulation_results" in st.session_state and st.session_state["simulation_results"]:
+        old_results = st.session_state["simulation_results"]
+        
+        # Delete large objects explicitly
+        if "network" in old_results:
+            del old_results["network"]  # WNTR network object (~100-500 KB)
+        if "dataframe" in old_results:
+            del old_results["dataframe"]  # Pandas DataFrame
+        
+        # Clear the entire results dict
+        del old_results
+        st.session_state["simulation_results"] = None
+        
+        # Force garbage collection (optional but recommended)
+        import gc
+        gc.collect()
+    
+    # ========================================================================
+    # NOW PROCEED WITH NEW SIMULATION
+    # ========================================================================
+    
+    # Determine leak node
+    if config["leak_node"] is None:
             # Random leak location
             grid_size = 4
             i = random.randint(0, grid_size - 1)
@@ -1333,7 +1364,17 @@ def main():
         # Store results
         st.session_state["simulation_results"] = results
         st.session_state["last_run_params"] = config
-        
+        # Check for simulation errors
+if "error" in results:
+    st.sidebar.error(
+        f"⚠️ **SIMULATION FAILED**\n\n"
+        f"Error: {results['error']}\n\n"
+        f"Using fallback data for visualization. "
+        f"Adjust parameters and try again."
+    )
+    st.session_state["simulation_error"] = results["error"]
+else:
+    st.session_state["simulation_error"] = None
         # Log operation
         log_entry = (
             f"[{datetime.now().strftime('%H:%M:%S')}] "
