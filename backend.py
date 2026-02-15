@@ -247,7 +247,8 @@ def hazen_williams_roughness(material: str, age_years: float,
         
         degradation = (1.0 - current_c / base_c) * 100.0
         return max(0.0, min(100.0, degradation))
-        @staticmethod
+        
+    @staticmethod
 def temperature_correction_factor(temperature_celsius: float) -> float:
     """
     Calculate roughness correction factor based on temperature.
