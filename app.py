@@ -1,8 +1,8 @@
-
 """
 Smart Shygyn PRO v3 — FRONTEND APPLICATION
 Complete Streamlit interface integrating all backend components.
 NO PLACEHOLDERS. Full production implementation.
+FIXED: Dark/Light Mode toggle with proper CSS injection and state management.
 """
 
 import streamlit as st
@@ -41,11 +41,12 @@ st.set_page_config(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STYLING & THEMES
+# STYLING & THEMES (UPDATED FOR MODERN STREAMLIT)
 # ═══════════════════════════════════════════════════════════════════════════
 
 DARK_CSS = """
 <style>
+/* Root variables */
 :root {
   --bg: #0e1117;
   --card: #1a1f2e;
@@ -58,6 +59,29 @@ DARK_CSS = """
   --muted: #94a3b8;
 }
 
+/* Main app container */
+[data-testid="stAppViewContainer"] {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+  background-color: var(--card);
+  border-right: 2px solid var(--border);
+}
+
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+  color: var(--text);
+}
+
+/* Header/Toolbar */
+[data-testid="stHeader"] {
+  background-color: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Metrics */
 [data-testid="stMetricValue"] {
   font-size: 24px;
   font-weight: 700;
@@ -71,8 +95,9 @@ DARK_CSS = """
   letter-spacing: 0.5px;
 }
 
+/* Headers */
 h1 {
-  color: var(--accent);
+  color: var(--accent) !important;
   text-align: center;
   padding: 16px 0;
   letter-spacing: 1px;
@@ -81,24 +106,207 @@ h1 {
 }
 
 h2 {
-  color: var(--text);
+  color: var(--text) !important;
   border-left: 4px solid var(--accent);
   padding-left: 12px;
   margin-top: 24px;
 }
 
 h3 {
-  color: var(--text);
+  color: var(--text) !important;
   border-bottom: 2px solid var(--accent);
   padding-bottom: 8px;
   margin-top: 16px;
 }
 
+h4, h5, h6 {
+  color: var(--text) !important;
+}
+
+/* Alerts */
+.stAlert {
+  border-radius: 8px;
+  border-left-width: 4px;
+  background-color: var(--card);
+  color: var(--text);
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 8px;
+  background-color: var(--bg);
+}
+
+.stTabs [data-baseweb="tab"] {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px 24px;
+  border-radius: 8px 8px 0 0;
+  background-color: var(--card);
+  color: var(--text);
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+  background-color: var(--border);
+}
+
+.stTabs [aria-selected="true"] {
+  background-color: var(--accent) !important;
+  color: white !important;
+}
+
+/* Buttons */
+.stButton > button {
+  width: 100%;
+  font-weight: 600;
+  border-radius: 6px;
+  background-color: var(--accent);
+  color: white;
+  border: none;
+}
+
+.stButton > button:hover {
+  background-color: #2563eb;
+  border: none;
+}
+
+.stButton > button[kind="primary"] {
+  background-color: var(--ok);
+}
+
+.stButton > button[kind="primary"]:hover {
+  background-color: #059669;
+}
+
+/* Expander */
+.streamlit-expanderHeader {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text);
+  background-color: var(--card);
+  border-radius: 6px;
+}
+
+/* Dataframes */
+[data-testid="stDataFrame"] {
+  background-color: var(--card);
+}
+
+/* Code blocks */
+.stCodeBlock {
+  background-color: var(--card) !important;
+  color: var(--text) !important;
+}
+
+/* Input widgets */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stSelectbox > div > div,
+.stSlider > div > div > div {
+  background-color: var(--card);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* Caption text */
+.stCaption {
+  color: var(--muted) !important;
+}
+
+/* Markdown */
+[data-testid="stMarkdownContainer"] p {
+  color: var(--text);
+}
+
+/* Dividers */
+hr {
+  border-color: var(--border);
+}
+</style>
+"""
+
+LIGHT_CSS = """
+<style>
+/* Light theme variables */
+:root {
+  --bg-light: #ffffff;
+  --card-light: #f8f9fa;
+  --border-light: #e2e8f0;
+  --accent-light: #1f77b4;
+  --text-light: #2c3e50;
+  --muted-light: #6c757d;
+}
+
+/* Main app container */
+[data-testid="stAppViewContainer"] {
+  background-color: var(--bg-light);
+  color: var(--text-light);
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+  background-color: var(--card-light);
+  border-right: 2px solid var(--border-light);
+}
+
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+  color: var(--text-light);
+}
+
+/* Header/Toolbar */
+[data-testid="stHeader"] {
+  background-color: var(--bg-light);
+  border-bottom: 1px solid var(--border-light);
+}
+
+/* Metrics */
+[data-testid="stMetricValue"] {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-light);
+}
+
+[data-testid="stMetricLabel"] {
+  font-size: 12px;
+  color: var(--muted-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Headers */
+h1 {
+  color: var(--accent-light) !important;
+  text-align: center;
+  padding: 16px 0;
+  border-bottom: 3px solid var(--accent-light);
+  margin-bottom: 24px;
+}
+
+h2 {
+  color: var(--text-light) !important;
+  border-left: 4px solid #3498db;
+  padding-left: 12px;
+  margin-top: 24px;
+}
+
+h3 {
+  color: var(--text-light) !important;
+  border-bottom: 2px solid #3498db;
+  padding-bottom: 8px;
+  margin-top: 16px;
+}
+
+h4, h5, h6 {
+  color: var(--text-light) !important;
+}
+
+/* Alerts */
 .stAlert {
   border-radius: 8px;
   border-left-width: 4px;
 }
 
+/* Tabs */
 .stTabs [data-baseweb="tab-list"] {
   gap: 8px;
 }
@@ -110,63 +318,32 @@ h3 {
   border-radius: 8px 8px 0 0;
 }
 
+/* Buttons */
 .stButton > button {
   width: 100%;
   font-weight: 600;
   border-radius: 6px;
 }
 
+/* Expander */
 .streamlit-expanderHeader {
   font-weight: 600;
   font-size: 15px;
 }
-</style>
-"""
 
-LIGHT_CSS = """
-<style>
-[data-testid="stMetricValue"] {
-  font-size: 24px;
-  font-weight: 700;
+/* Caption text */
+.stCaption {
+  color: var(--muted-light) !important;
 }
 
-[data-testid="stMetricLabel"] {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+/* Markdown */
+[data-testid="stMarkdownContainer"] p {
+  color: var(--text-light);
 }
 
-h1 {
-  color: #1f77b4;
-  text-align: center;
-  padding: 16px 0;
-  border-bottom: 3px solid #1f77b4;
-  margin-bottom: 24px;
-}
-
-h2 {
-  color: #2c3e50;
-  border-left: 4px solid #3498db;
-  padding-left: 12px;
-  margin-top: 24px;
-}
-
-h3 {
-  color: #2c3e50;
-  border-bottom: 2px solid #3498db;
-  padding-bottom: 8px;
-  margin-top: 16px;
-}
-
-.stAlert {
-  border-radius: 8px;
-  border-left-width: 4px;
-}
-
-.stButton > button {
-  width: 100%;
-  font-weight: 600;
-  border-radius: 6px;
+/* Dividers */
+hr {
+  border-color: var(--border-light);
 }
 </style>
 """
@@ -184,14 +361,12 @@ def init_session_state():
         "isolated_pipes": [],
         "city_name": "Алматы",
         "last_run_params": {},
+        "dark_mode": True,  # Add dark_mode to session state
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-
-
-init_session_state()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -876,9 +1051,15 @@ def render_sidebar():
     st.sidebar.title("💧 Smart Shygyn PRO v3")
     st.sidebar.markdown("### Command Center Configuration")
     
-    # Theme toggle
-    dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=True)
-    st.markdown(DARK_CSS if dark_mode else LIGHT_CSS, unsafe_allow_html=True)
+    # Theme toggle with proper key and state management
+    dark_mode = st.sidebar.toggle(
+        "🌙 Dark Mode", 
+        value=st.session_state.get("dark_mode", True),
+        key="theme_toggle"
+    )
+    
+    # Update session state
+    st.session_state["dark_mode"] = dark_mode
     
     st.sidebar.markdown("---")
     
@@ -1059,6 +1240,13 @@ def render_sidebar():
 
 def main():
     """Main application entry point."""
+    
+    # Initialize session state FIRST
+    init_session_state()
+    
+    # Apply CSS theme IMMEDIATELY (before any other rendering)
+    css_to_apply = DARK_CSS if st.session_state.get("dark_mode", True) else LIGHT_CSS
+    st.markdown(css_to_apply, unsafe_allow_html=True)
     
     # Render sidebar and get config
     config = render_sidebar()
@@ -1380,7 +1568,7 @@ def main():
         with col_map:
             st.markdown("### 🗺️ Interactive Network Visualization")
             
-            # Generate map
+            # Generate map (with current dark mode state)
             folium_map = make_folium_map(
                 results,
                 st.session_state["isolated_pipes"],
@@ -1403,7 +1591,7 @@ def main():
             f"Degradation: **{results['degradation_pct']:.1f}%**"
         )
         
-        # Main plot
+        # Main plot (with current dark mode state)
         fig_hydro = make_hydraulic_plot(
             df,
             config["leak_threshold"],
@@ -1627,7 +1815,7 @@ def main():
         
         st.markdown("---")
         
-        # Failure probability heatmap
+        # Failure probability heatmap (with current dark mode state)
         st.markdown("### 🔥 Pipe Failure Probability Heatmap")
         
         fig_heatmap = make_failure_heatmap(results, config["dark_mode"])
