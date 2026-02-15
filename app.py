@@ -1,9 +1,8 @@
+
 """
 Smart Shygyn PRO v3 — FRONTEND APPLICATION
 Complete Streamlit interface integrating all backend components.
 NO PLACEHOLDERS. Full production implementation.
-FIXED: Dark/Light Mode toggle with proper CSS injection and state management.
-INTEGRATED: Real-time weather tracking with Open-Meteo API.
 """
 
 import streamlit as st
@@ -27,7 +26,6 @@ from backend import (
     CityManager,
     HydraulicPhysics,
 )
-from weather import get_city_weather, get_frost_multiplier, format_weather_display
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -43,12 +41,11 @@ st.set_page_config(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STYLING & THEMES (UPDATED FOR MODERN STREAMLIT)
+# STYLING & THEMES
 # ═══════════════════════════════════════════════════════════════════════════
 
 DARK_CSS = """
 <style>
-/* Root variables */
 :root {
   --bg: #0e1117;
   --card: #1a1f2e;
@@ -61,29 +58,6 @@ DARK_CSS = """
   --muted: #94a3b8;
 }
 
-/* Main app container */
-[data-testid="stAppViewContainer"] {
-  background-color: var(--bg);
-  color: var(--text);
-}
-
-/* Sidebar */
-[data-testid="stSidebar"] {
-  background-color: var(--card);
-  border-right: 2px solid var(--border);
-}
-
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
-  color: var(--text);
-}
-
-/* Header/Toolbar */
-[data-testid="stHeader"] {
-  background-color: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-
-/* Metrics */
 [data-testid="stMetricValue"] {
   font-size: 24px;
   font-weight: 700;
@@ -97,9 +71,8 @@ DARK_CSS = """
   letter-spacing: 0.5px;
 }
 
-/* Headers */
 h1 {
-  color: var(--accent) !important;
+  color: var(--accent);
   text-align: center;
   padding: 16px 0;
   letter-spacing: 1px;
@@ -108,35 +81,26 @@ h1 {
 }
 
 h2 {
-  color: var(--text) !important;
+  color: var(--text);
   border-left: 4px solid var(--accent);
   padding-left: 12px;
   margin-top: 24px;
 }
 
 h3 {
-  color: var(--text) !important;
+  color: var(--text);
   border-bottom: 2px solid var(--accent);
   padding-bottom: 8px;
   margin-top: 16px;
 }
 
-h4, h5, h6 {
-  color: var(--text) !important;
-}
-
-/* Alerts */
 .stAlert {
   border-radius: 8px;
   border-left-width: 4px;
-  background-color: var(--card);
-  color: var(--text);
 }
 
-/* Tabs */
 .stTabs [data-baseweb="tab-list"] {
   gap: 8px;
-  background-color: var(--bg);
 }
 
 .stTabs [data-baseweb="tab"] {
@@ -144,208 +108,65 @@ h4, h5, h6 {
   font-weight: 600;
   padding: 12px 24px;
   border-radius: 8px 8px 0 0;
-  background-color: var(--card);
-  color: var(--text);
 }
 
-.stTabs [data-baseweb="tab"]:hover {
-  background-color: var(--border);
-}
-
-.stTabs [aria-selected="true"] {
-  background-color: var(--accent) !important;
-  color: white !important;
-}
-
-/* Buttons */
 .stButton > button {
   width: 100%;
   font-weight: 600;
   border-radius: 6px;
-  background-color: var(--accent);
-  color: white;
-  border: none;
 }
 
-.stButton > button:hover {
-  background-color: #2563eb;
-  border: none;
-}
-
-.stButton > button[kind="primary"] {
-  background-color: var(--ok);
-}
-
-.stButton > button[kind="primary"]:hover {
-  background-color: #059669;
-}
-
-/* Expander */
 .streamlit-expanderHeader {
   font-weight: 600;
   font-size: 15px;
-  color: var(--text);
-  background-color: var(--card);
-  border-radius: 6px;
-}
-
-/* Dataframes */
-[data-testid="stDataFrame"] {
-  background-color: var(--card);
-}
-
-/* Code blocks */
-.stCodeBlock {
-  background-color: var(--card) !important;
-  color: var(--text) !important;
-}
-
-/* Input widgets */
-.stTextInput > div > div > input,
-.stNumberInput > div > div > input,
-.stSelectbox > div > div,
-.stSlider > div > div > div {
-  background-color: var(--card);
-  color: var(--text);
-  border-color: var(--border);
-}
-
-/* Caption text */
-.stCaption {
-  color: var(--muted) !important;
-}
-
-/* Markdown */
-[data-testid="stMarkdownContainer"] p {
-  color: var(--text);
-}
-
-/* Dividers */
-hr {
-  border-color: var(--border);
 }
 </style>
 """
 
 LIGHT_CSS = """
 <style>
-/* Light theme variables */
-:root {
-  --bg-light: #ffffff;
-  --card-light: #f8f9fa;
-  --border-light: #e2e8f0;
-  --accent-light: #1f77b4;
-  --text-light: #2c3e50;
-  --muted-light: #6c757d;
-}
-
-/* Main app container */
-[data-testid="stAppViewContainer"] {
-  background-color: var(--bg-light);
-  color: var(--text-light);
-}
-
-/* Sidebar */
-[data-testid="stSidebar"] {
-  background-color: var(--card-light);
-  border-right: 2px solid var(--border-light);
-}
-
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
-  color: var(--text-light);
-}
-
-/* Header/Toolbar */
-[data-testid="stHeader"] {
-  background-color: var(--bg-light);
-  border-bottom: 1px solid var(--border-light);
-}
-
-/* Metrics */
 [data-testid="stMetricValue"] {
   font-size: 24px;
   font-weight: 700;
-  color: var(--text-light);
 }
 
 [data-testid="stMetricLabel"] {
   font-size: 12px;
-  color: var(--muted-light);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-/* Headers */
 h1 {
-  color: var(--accent-light) !important;
+  color: #1f77b4;
   text-align: center;
   padding: 16px 0;
-  border-bottom: 3px solid var(--accent-light);
+  border-bottom: 3px solid #1f77b4;
   margin-bottom: 24px;
 }
 
 h2 {
-  color: var(--text-light) !important;
+  color: #2c3e50;
   border-left: 4px solid #3498db;
   padding-left: 12px;
   margin-top: 24px;
 }
 
 h3 {
-  color: var(--text-light) !important;
+  color: #2c3e50;
   border-bottom: 2px solid #3498db;
   padding-bottom: 8px;
   margin-top: 16px;
 }
 
-h4, h5, h6 {
-  color: var(--text-light) !important;
-}
-
-/* Alerts */
 .stAlert {
   border-radius: 8px;
   border-left-width: 4px;
 }
 
-/* Tabs */
-.stTabs [data-baseweb="tab-list"] {
-  gap: 8px;
-}
-
-.stTabs [data-baseweb="tab"] {
-  font-size: 14px;
-  font-weight: 600;
-  padding: 12px 24px;
-  border-radius: 8px 8px 0 0;
-}
-
-/* Buttons */
 .stButton > button {
   width: 100%;
   font-weight: 600;
   border-radius: 6px;
-}
-
-/* Expander */
-.streamlit-expanderHeader {
-  font-weight: 600;
-  font-size: 15px;
-}
-
-/* Caption text */
-.stCaption {
-  color: var(--muted-light) !important;
-}
-
-/* Markdown */
-[data-testid="stMarkdownContainer"] p {
-  color: var(--text-light);
-}
-
-/* Dividers */
-hr {
-  border-color: var(--border-light);
 }
 </style>
 """
@@ -363,12 +184,14 @@ def init_session_state():
         "isolated_pipes": [],
         "city_name": "Алматы",
         "last_run_params": {},
-        "dark_mode": True,  # Add dark_mode to session state
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+init_session_state()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1053,19 +876,13 @@ def render_sidebar():
     st.sidebar.title("💧 Smart Shygyn PRO v3")
     st.sidebar.markdown("### Command Center Configuration")
     
-    # Theme toggle with proper key and state management
-    dark_mode = st.sidebar.toggle(
-        "🌙 Dark Mode", 
-        value=st.session_state.get("dark_mode", True),
-        key="theme_toggle"
-    )
-    
-    # Update session state
-    st.session_state["dark_mode"] = dark_mode
+    # Theme toggle
+    dark_mode = st.sidebar.toggle("🌙 Dark Mode", value=True)
+    st.markdown(DARK_CSS if dark_mode else LIGHT_CSS, unsafe_allow_html=True)
     
     st.sidebar.markdown("---")
     
-    # City selection with weather integration
+    # City selection
     with st.sidebar.expander("🏙️ City Selection", expanded=True):
         city_name = st.selectbox(
             "Select City",
@@ -1074,55 +891,14 @@ def render_sidebar():
         )
         st.session_state["city_name"] = city_name
         
-        # Weather automation toggle
-        auto_weather = st.checkbox(
-            "🛰️ Real-time Weather",
-            value=True,
-            key="auto_weather_toggle",
-            help="Fetch live temperature from Open-Meteo API"
+        season_temp = st.slider(
+            "Current Season Temperature (°C)",
+            min_value=-30,
+            max_value=45,
+            value=10,
+            step=1,
+            help="Used for freeze-thaw burst risk calculation (Astana)"
         )
-        
-        if auto_weather:
-            # Fetch real-time weather
-            temperature, status, error = get_city_weather(city_name)
-            frost_mult = get_frost_multiplier(temperature)
-            
-            # Display weather info
-            weather_display = format_weather_display(city_name, temperature, status, error)
-            st.markdown(weather_display, unsafe_allow_html=True)
-            
-            if status == "fallback":
-                st.caption("⚠️ Using fallback temperature. Check internet connection.")
-            
-            # Show frost risk warning
-            if frost_mult > 1.0:
-                st.warning(f"🧊 **Frost Risk Alert**: Pipe failure probability increased by **{(frost_mult-1)*100:.0f}%** due to freezing conditions!")
-            
-            # Store temperature for simulation
-            season_temp = temperature
-            
-            # Add refresh button
-            if st.button("🔄 Refresh Weather", use_container_width=True, key="refresh_weather_btn"):
-                from weather import clear_weather_cache
-                clear_weather_cache()
-                st.rerun()
-        else:
-            # Manual temperature input (stress testing mode)
-            st.info("📊 **Stress Testing Mode**: Manual temperature control")
-            season_temp = st.slider(
-                "Temperature (°C)",
-                min_value=-30,
-                max_value=45,
-                value=10,
-                step=1,
-                help="Manual override for scenario testing"
-            )
-            
-            frost_mult = get_frost_multiplier(season_temp)
-            if frost_mult > 1.0:
-                st.warning(f"🧊 **Frost Risk**: ×{frost_mult:.2f} multiplier active")
-        
-        st.markdown("---")
         
         # Show city info
         city_info = CityManager.CITIES[city_name]
@@ -1262,7 +1038,6 @@ def render_sidebar():
         "dark_mode": dark_mode,
         "city_name": city_name,
         "season_temp": season_temp,
-        "frost_multiplier": frost_mult,
         "material": material,
         "pipe_age": pipe_age,
         "pump_head": pump_head,
@@ -1285,15 +1060,8 @@ def render_sidebar():
 def main():
     """Main application entry point."""
     
-    # Initialize session state FIRST
-    init_session_state()
-    
-    # Render sidebar and get config (this updates dark_mode in session state)
+    # Render sidebar and get config
     config = render_sidebar()
-    
-    # Apply CSS theme AFTER sidebar renders (so we have the correct toggle value)
-    css_to_apply = DARK_CSS if config["dark_mode"] else LIGHT_CSS
-    st.markdown(css_to_apply, unsafe_allow_html=True)
     
     # Run simulation if button clicked
     if config["run_simulation"]:
@@ -1342,8 +1110,6 @@ def main():
             + (" | SmartPump" if config['smart_pump'] else "")
             + (f" | Leak: {leak_node}" if leak_node else "")
             + (f" | N-1: {config['contingency_pipe']}" if config['contingency_pipe'] else "")
-            + (f" | Temp: {config['season_temp']:.1f}°C" if config['season_temp'] else "")
-            + (f" | Frost: ×{config['frost_multiplier']:.2f}" if config['frost_multiplier'] > 1.0 else "")
         )
         st.session_state["operation_log"].append(log_entry)
         
@@ -1365,7 +1131,7 @@ def main():
             ("🧠", "Smart Detection", "30% sensor coverage", "Residual Matrix EKF"),
             ("⚡", "N-1 Analysis", "Pipe failure simulation", "Impact assessment"),
             ("💰", "Full ROI", "CAPEX/OPEX/Payback", "Carbon footprint"),
-            ("🖥️", "Command Center", "Dark/Light mode", "Real-time weather"),
+            ("🖥️", "Command Center", "Dark/Light mode", "4 Pro dashboards"),
         ]
         
         for col, (icon, title, line1, line2) in zip(cols, features):
@@ -1614,7 +1380,7 @@ def main():
         with col_map:
             st.markdown("### 🗺️ Interactive Network Visualization")
             
-            # Generate map (with current dark mode state)
+            # Generate map
             folium_map = make_folium_map(
                 results,
                 st.session_state["isolated_pipes"],
@@ -1637,7 +1403,7 @@ def main():
             f"Degradation: **{results['degradation_pct']:.1f}%**"
         )
         
-        # Main plot (with current dark mode state)
+        # Main plot
         fig_hydro = make_hydraulic_plot(
             df,
             config["leak_threshold"],
@@ -1861,7 +1627,7 @@ def main():
         
         st.markdown("---")
         
-        # Failure probability heatmap (with current dark mode state)
+        # Failure probability heatmap
         st.markdown("### 🔥 Pipe Failure Probability Heatmap")
         
         fig_heatmap = make_failure_heatmap(results, config["dark_mode"])
