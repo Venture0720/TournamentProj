@@ -3,6 +3,7 @@ Smart Shygyn PRO v3 — FRONTEND APPLICATION
 Complete Streamlit interface integrating all backend components.
 NO PLACEHOLDERS. Full production implementation.
 FIXED: Dark/Light Mode toggle with proper CSS injection and state management.
+INTEGRATED: Real-time weather tracking with Open-Meteo API.
 """
 
 import streamlit as st
@@ -26,6 +27,7 @@ from backend import (
     CityManager,
     HydraulicPhysics,
 )
+from weather import get_city_weather, get_frost_multiplier, format_weather_display
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1063,7 +1065,7 @@ def render_sidebar():
     
     st.sidebar.markdown("---")
     
-    # City selection
+    # City selection with weather integration
     with st.sidebar.expander("🏙️ City Selection", expanded=True):
         city_name = st.selectbox(
             "Select City",
@@ -1072,14 +1074,55 @@ def render_sidebar():
         )
         st.session_state["city_name"] = city_name
         
-        season_temp = st.slider(
-            "Current Season Temperature (°C)",
-            min_value=-30,
-            max_value=45,
-            value=10,
-            step=1,
-            help="Used for freeze-thaw burst risk calculation (Astana)"
+        # Weather automation toggle
+        auto_weather = st.checkbox(
+            "🛰️ Real-time Weather",
+            value=True,
+            key="auto_weather_toggle",
+            help="Fetch live temperature from Open-Meteo API"
         )
+        
+        if auto_weather:
+            # Fetch real-time weather
+            temperature, status, error = get_city_weather(city_name)
+            frost_mult = get_frost_multiplier(temperature)
+            
+            # Display weather info
+            weather_display = format_weather_display(city_name, temperature, status, error)
+            st.markdown(weather_display, unsafe_allow_html=True)
+            
+            if status == "fallback":
+                st.caption("⚠️ Using fallback temperature. Check internet connection.")
+            
+            # Show frost risk warning
+            if frost_mult > 1.0:
+                st.warning(f"🧊 **Frost Risk Alert**: Pipe failure probability increased by **{(frost_mult-1)*100:.0f}%** due to freezing conditions!")
+            
+            # Store temperature for simulation
+            season_temp = temperature
+            
+            # Add refresh button
+            if st.button("🔄 Refresh Weather", use_container_width=True, key="refresh_weather_btn"):
+                from weather import clear_weather_cache
+                clear_weather_cache()
+                st.rerun()
+        else:
+            # Manual temperature input (stress testing mode)
+            st.info("📊 **Stress Testing Mode**: Manual temperature control")
+            season_temp = st.slider(
+                "Temperature (°C)",
+                min_value=-30,
+                max_value=45,
+                value=10,
+                step=1,
+                help="Manual override for scenario testing"
+            )
+            
+            frost_mult = get_frost_multiplier(season_temp)
+            if frost_mult > 1.0:
+                st.warning(f"🧊 **Frost Risk**: ×{frost_mult:.2f} multiplier active")
+        
+        st.markdown("---")
         
         # Show city info
         city_info = CityManager.CITIES[city_name]
@@ -1219,6 +1262,7 @@ def render_sidebar():
         "dark_mode": dark_mode,
         "city_name": city_name,
         "season_temp": season_temp,
+        "frost_multiplier": frost_mult,
         "material": material,
         "pipe_age": pipe_age,
         "pump_head": pump_head,
@@ -1298,6 +1342,8 @@ def main():
             + (" | SmartPump" if config['smart_pump'] else "")
             + (f" | Leak: {leak_node}" if leak_node else "")
             + (f" | N-1: {config['contingency_pipe']}" if config['contingency_pipe'] else "")
+            + (f" | Temp: {config['season_temp']:.1f}°C" if config['season_temp'] else "")
+            + (f" | Frost: ×{config['frost_multiplier']:.2f}" if config['frost_multiplier'] > 1.0 else "")
         )
         st.session_state["operation_log"].append(log_entry)
         
@@ -1319,7 +1365,7 @@ def main():
             ("🧠", "Smart Detection", "30% sensor coverage", "Residual Matrix EKF"),
             ("⚡", "N-1 Analysis", "Pipe failure simulation", "Impact assessment"),
             ("💰", "Full ROI", "CAPEX/OPEX/Payback", "Carbon footprint"),
-            ("🖥️", "Command Center", "Dark/Light mode", "4 Pro dashboards"),
+            ("🖥️", "Command Center", "Dark/Light mode", "Real-time weather"),
         ]
         
         for col, (icon, title, line1, line2) in zip(cols, features):
