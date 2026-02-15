@@ -1147,18 +1147,17 @@ def render_sidebar():
             help="Used for H-W roughness degradation model"
         )
         
-        # Show calculated roughness
         # Show calculated roughness with temperature correction
-roughness = HydraulicPhysics.hazen_williams_roughness(
-    material, pipe_age, season_temp
-)
-base_roughness = HydraulicPhysics.HAZEN_WILLIAMS_BASE[material]
-degradation = HydraulicPhysics.degradation_percentage(material, pipe_age)
-temp_factor = HydraulicPhysics.temperature_correction_factor(season_temp)
-
-st.caption(f"**H-W Roughness C:** {roughness:.1f}")
-st.caption(f"**Base C:** {base_roughness:.0f} → Aged: {base_roughness * (1 - degradation/100):.1f}")
-st.caption(f"**Temp Correction:** ×{temp_factor:.3f} ({season_temp:.1f}°C)")
+        roughness = HydraulicPhysics.hazen_williams_roughness(
+            material, pipe_age, season_temp
+        )
+        base_roughness = HydraulicPhysics.HAZEN_WILLIAMS_BASE[material]
+        degradation = HydraulicPhysics.degradation_percentage(material, pipe_age)
+        temp_factor = HydraulicPhysics.temperature_correction_factor(season_temp)
+        
+        st.caption(f"**H-W Roughness C:** {roughness:.1f}")
+        st.caption(f"**Base C:** {base_roughness:.0f} → Aged: {base_roughness * (1 - degradation/100):.1f}")
+        st.caption(f"**Temp Correction:** ×{temp_factor:.3f} ({season_temp:.1f}°C)")
         
         sampling_rate = st.select_slider(
             "Sensor Sampling Rate",
