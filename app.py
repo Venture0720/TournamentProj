@@ -3,7 +3,6 @@ Smart Shygyn PRO v3 — FRONTEND APPLICATION
 Complete Streamlit interface integrating all backend components.
 NO PLACEHOLDERS. Full production implementation.
 FIXED: Dark/Light Mode toggle with proper CSS injection and state management.
-INTEGRATED: Real-time weather tracking with Open-Meteo API.
 """
 
 import streamlit as st
@@ -27,7 +26,6 @@ from backend import (
     CityManager,
     HydraulicPhysics,
 )
-from weather import get_city_weather, get_frost_multiplier, format_weather_display
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1065,7 +1063,7 @@ def render_sidebar():
     
     st.sidebar.markdown("---")
     
-    # City selection with weather integration
+    # City selection
     with st.sidebar.expander("🏙️ City Selection", expanded=True):
         city_name = st.selectbox(
             "Select City",
@@ -1074,55 +1072,14 @@ def render_sidebar():
         )
         st.session_state["city_name"] = city_name
         
-        # Weather automation toggle
-        auto_weather = st.checkbox(
-            "🛰️ Real-time Weather",
-            value=True,
-            key="auto_weather_toggle",
-            help="Fetch live temperature from Open-Meteo API"
+        season_temp = st.slider(
+            "Current Season Temperature (°C)",
+            min_value=-30,
+            max_value=45,
+            value=10,
+            step=1,
+            help="Used for freeze-thaw burst risk calculation (Astana)"
         )
-        
-        if auto_weather:
-            # Fetch real-time weather
-            temperature, status, error = get_city_weather(city_name)
-            frost_mult = get_frost_multiplier(temperature)
-            
-            # Display weather info
-            weather_display = format_weather_display(city_name, temperature, status, error)
-            st.markdown(weather_display, unsafe_allow_html=True)
-            
-            if status == "fallback":
-                st.caption("⚠️ Using fallback temperature. Check internet connection.")
-            
-            # Show frost risk warning
-            if frost_mult > 1.0:
-                st.warning(f"🧊 **Frost Risk Alert**: Pipe failure probability increased by **{(frost_mult-1)*100:.0f}%** due to freezing conditions!")
-            
-            # Store temperature for simulation
-            season_temp = temperature
-            
-            # Add refresh button
-            if st.button("🔄 Refresh Weather", use_container_width=True, key="refresh_weather_btn"):
-                from weather import clear_weather_cache
-                clear_weather_cache()
-                st.rerun()
-        else:
-            # Manual temperature input (stress testing mode)
-            st.info("📊 **Stress Testing Mode**: Manual temperature control")
-            season_temp = st.slider(
-                "Temperature (°C)",
-                min_value=-30,
-                max_value=45,
-                value=10,
-                step=1,
-                help="Manual override for scenario testing"
-            )
-            
-            frost_mult = get_frost_multiplier(season_temp)
-            if frost_mult > 1.0:
-                st.warning(f"🧊 **Frost Risk**: ×{frost_mult:.2f} multiplier active")
-        
-        st.markdown("---")
         
         # Show city info
         city_info = CityManager.CITIES[city_name]
@@ -1147,17 +1104,11 @@ def render_sidebar():
             help="Used for H-W roughness degradation model"
         )
         
-        # Show calculated roughness with temperature correction
-        roughness = HydraulicPhysics.hazen_williams_roughness(
-            material, pipe_age, season_temp
-        )
-        base_roughness = HydraulicPhysics.HAZEN_WILLIAMS_BASE[material]
+        # Show calculated roughness
+        roughness = HydraulicPhysics.hazen_williams_roughness(material, pipe_age)
         degradation = HydraulicPhysics.degradation_percentage(material, pipe_age)
-        temp_factor = HydraulicPhysics.temperature_correction_factor(season_temp)
-        
         st.caption(f"**H-W Roughness C:** {roughness:.1f}")
-        st.caption(f"**Base C:** {base_roughness:.0f} → Aged: {base_roughness * (1 - degradation/100):.1f}")
-        st.caption(f"**Temp Correction:** ×{temp_factor:.3f} ({season_temp:.1f}°C)")
+        st.caption(f"**Degradation:** {degradation:.1f}%")
         
         sampling_rate = st.select_slider(
             "Sensor Sampling Rate",
@@ -1268,7 +1219,6 @@ def render_sidebar():
         "dark_mode": dark_mode,
         "city_name": city_name,
         "season_temp": season_temp,
-        "frost_multiplier": frost_mult,
         "material": material,
         "pipe_age": pipe_age,
         "pump_head": pump_head,
@@ -1303,32 +1253,8 @@ def main():
     
     # Run simulation if button clicked
     if config["run_simulation"]:
-    # ========================================================================
-    # MEMORY CLEANUP: Clear previous simulation to prevent memory leaks
-    # ========================================================================
-    if "simulation_results" in st.session_state and st.session_state["simulation_results"]:
-        old_results = st.session_state["simulation_results"]
-        
-        # Delete large objects explicitly
-        if "network" in old_results:
-            del old_results["network"]  # WNTR network object (~100-500 KB)
-        if "dataframe" in old_results:
-            del old_results["dataframe"]  # Pandas DataFrame
-        
-        # Clear the entire results dict
-        del old_results
-        st.session_state["simulation_results"] = None
-        
-        # Force garbage collection (optional but recommended)
-        import gc
-        gc.collect()
-    
-    # ========================================================================
-    # NOW PROCEED WITH NEW SIMULATION
-    # ========================================================================
-    
-    # Determine leak node
-    if config["leak_node"] is None:
+        # Determine leak node
+        if config["leak_node"] is None:
             # Random leak location
             grid_size = 4
             i = random.randint(0, grid_size - 1)
@@ -1363,17 +1289,7 @@ def main():
         # Store results
         st.session_state["simulation_results"] = results
         st.session_state["last_run_params"] = config
-        # Check for simulation errors
-if "error" in results:
-    st.sidebar.error(
-        f"⚠️ **SIMULATION FAILED**\n\n"
-        f"Error: {results['error']}\n\n"
-        f"Using fallback data for visualization. "
-        f"Adjust parameters and try again."
-    )
-    st.session_state["simulation_error"] = results["error"]
-else:
-    st.session_state["simulation_error"] = None
+        
         # Log operation
         log_entry = (
             f"[{datetime.now().strftime('%H:%M:%S')}] "
@@ -1382,8 +1298,6 @@ else:
             + (" | SmartPump" if config['smart_pump'] else "")
             + (f" | Leak: {leak_node}" if leak_node else "")
             + (f" | N-1: {config['contingency_pipe']}" if config['contingency_pipe'] else "")
-            + (f" | Temp: {config['season_temp']:.1f}°C" if config['season_temp'] else "")
-            + (f" | Frost: ×{config['frost_multiplier']:.2f}" if config['frost_multiplier'] > 1.0 else "")
         )
         st.session_state["operation_log"].append(log_entry)
         
@@ -1405,7 +1319,7 @@ else:
             ("🧠", "Smart Detection", "30% sensor coverage", "Residual Matrix EKF"),
             ("⚡", "N-1 Analysis", "Pipe failure simulation", "Impact assessment"),
             ("💰", "Full ROI", "CAPEX/OPEX/Payback", "Carbon footprint"),
-            ("🖥️", "Command Center", "Dark/Light mode", "Real-time weather"),
+            ("🖥️", "Command Center", "Dark/Light mode", "4 Pro dashboards"),
         ]
         
         for col, (icon, title, line1, line2) in zip(cols, features):
