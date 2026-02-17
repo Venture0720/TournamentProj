@@ -2,11 +2,11 @@
 Smart Shygyn PRO v3 — Data Loader
 BattLeDIM dataset + Kazakhstan real data.
 
-Strategy:
-- Download from Zenodo via direct ?download=1 URLs (no gdown needed)
+Strategy (priority order):
+1. GitHub Releases (fast CDN, no rate limits)
+2. Zenodo (fallback, slower)
 - ALL files are optional — app works with whatever it gets
 - Success = at least one SCADA file downloaded
-- No Google Drive (always rate-limited)
 """
 
 import logging
@@ -60,27 +60,41 @@ def get_estimated_pipe_age(city_name: str) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# GITHUB RELEASES CONFIG  ← основной источник
+# ═══════════════════════════════════════════════════════════════════════════
+
+GITHUB_RELEASE_BASE = (
+    "https://github.com/Venture0720/TournamentProj"
+    "/releases/download/v1.0-data"
+)
+
+# Точные имена файлов как они названы в GitHub Release
+GITHUB_FILES: Dict[str, str] = {
+    "scada_2018":  "2018_SCADA.xlsx",
+    "scada_2019":  "2019_SCADA.xlsx",
+    "network_inp": "L-TOWN.inp",
+    "leaks_2019":  "2019_Leakages.csv",
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # BATTLEDIM CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
 
 BATTLEDIM_DATA_DIR = Path("data/battledim")
 ZENODO_RECORD_ID   = "4017659"
 
-# All known filenames for each key (Zenodo uses spaces, not underscores)
-# We try EVERY variant until one downloads successfully.
+# Zenodo fallback filenames (пробуем если GitHub не сработал)
 FILENAME_ALTERNATIVES: Dict[str, List[str]] = {
     "scada_2018": [
         "2018 SCADA.xlsx",
         "2018_SCADA.xlsx",
         "2018 SCADA.xls",
-        "2018_SCADA.xls",
         "SCADA_2018.xlsx",
     ],
     "scada_2019": [
         "2019 SCADA.xlsx",
         "2019_SCADA.xlsx",
         "2019 SCADA.xls",
-        "2019_SCADA.xls",
         "SCADA_2019.xlsx",
     ],
     "network_inp": [
@@ -88,22 +102,18 @@ FILENAME_ALTERNATIVES: Dict[str, List[str]] = {
         "L-TOWN.inp",
         "l-town.inp",
         "LTOWN.inp",
-        "ltown.inp",
-        "L_Town.inp",
         "network.inp",
-        "L-Town.inpx",
     ],
     "leaks_2019": [
         "Leak_Labels.xlsx",
         "Leak_Labels.csv",
         "2019 Leaks.csv",
-        "2019_Leaks.csv",
-        "leaks.csv",
+        "2019_Leakages.csv",
         "GroundTruth.csv",
     ],
 }
 
-# Canonical local name to save each file as
+# Канонические имена для сохранения локально
 CANONICAL_NAMES = {
     "scada_2018":  "2018_SCADA.xlsx",
     "scada_2019":  "2019_SCADA.xlsx",
@@ -119,7 +129,7 @@ CANONICAL_NAMES = {
 class BattLeDIMLoader:
     """
     Loader for BattLeDIM 2020 (L-Town, Limassol, Cyprus).
-    All files are optional — app degrades gracefully if any are missing.
+    Downloads from GitHub Releases first, then falls back to Zenodo.
     DOI: 10.5281/zenodo.4017659
     """
 
@@ -152,73 +162,107 @@ class BattLeDIMLoader:
     def all_files_present(self) -> bool:
         return all(self.check_files_exist().values())
 
-    # ── Download ─────────────────────────────────────────────────────────
+    # ── Universal URL downloader ──────────────────────────────────────────
 
-    def _try_download(self, zenodo_filename: str, local_dest: Path) -> bool:
+    def _try_url(self, url: str, local_dest: Path) -> bool:
         """
-        Try to download one file from Zenodo using the ?download=1 URL.
+        Download file from any direct URL.
+        Works with GitHub Releases, Zenodo, or any CDN.
         Returns True on success.
         """
-        # URL-encode spaces as %20
-        encoded = zenodo_filename.replace(" ", "%20")
-        url = (f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
-               f"/files/{encoded}?download=1")
         try:
-            headers = {"User-Agent": "Mozilla/5.0 SmartShygyn/3.0"}
-            with requests.get(url, stream=True, timeout=120,
+            headers = {
+                "User-Agent": "Mozilla/5.0 SmartShygyn/3.0",
+                "Accept": "*/*",
+            }
+            with requests.get(url, stream=True, timeout=180,
                               headers=headers, allow_redirects=True) as r:
                 if r.status_code != 200:
+                    logger.debug("HTTP %d for %s", r.status_code, url)
                     return False
-                # Reject HTML error pages
+                # Reject HTML error pages (e.g. 404 pages from GitHub)
                 ct = r.headers.get("Content-Type", "")
                 if "text/html" in ct:
+                    logger.debug("Got HTML instead of file from %s", url)
                     return False
                 with open(local_dest, "wb") as f:
                     shutil.copyfileobj(r.raw, f)
 
             if local_dest.exists() and local_dest.stat().st_size > 200:
-                logger.info("✓ Downloaded %s (%.0f KB)",
-                            local_dest.name, local_dest.stat().st_size / 1024)
+                logger.info("✓ Downloaded %s → %s (%.0f KB)",
+                            url.split("/")[-1],
+                            local_dest.name,
+                            local_dest.stat().st_size / 1024)
                 return True
 
             local_dest.unlink(missing_ok=True)
             return False
+
         except Exception as exc:
-            logger.debug("  failed %s: %s", url, exc)
+            logger.debug("Download failed %s: %s", url, exc)
             local_dest.unlink(missing_ok=True)
             return False
 
+    # ── Zenodo fallback ───────────────────────────────────────────────────
+
+    def _try_zenodo(self, zenodo_filename: str, local_dest: Path) -> bool:
+        """Try to download one file from Zenodo using ?download=1 URL."""
+        encoded = zenodo_filename.replace(" ", "%20")
+        url = (f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
+               f"/files/{encoded}?download=1")
+        return self._try_url(url, local_dest)
+
+    # ── Main download ─────────────────────────────────────────────────────
+
     def download_dataset(self) -> Tuple[bool, str]:
         """
-        Download all BattLeDIM files from Zenodo.
-        Tries every known filename variant.
-        All files are optional — returns success if ANY SCADA file downloaded.
+        Download all BattLeDIM files.
+
+        Priority:
+        1. GitHub Releases (fast, reliable)
+        2. Zenodo (slower, fallback)
+
+        Returns success if ANY SCADA file was downloaded.
         """
         results: Dict[str, bool] = {}
 
-        for key, alt_names in FILENAME_ALTERNATIVES.items():
-            # Already have it?
+        for key in FILENAME_ALTERNATIVES:
+
+            # Already have it locally?
             if self._resolve_path(key) is not None:
                 results[key] = True
                 logger.info("Already present: %s", key)
                 continue
 
             canonical = CANONICAL_NAMES[key]
-            got_it = False
+            dest      = self.data_dir / canonical
+            got_it    = False
 
-            for filename in alt_names:
-                # Save as canonical name to simplify later lookups
-                dest = self.data_dir / canonical
-                logger.info("Trying Zenodo: %s", filename)
-                if self._try_download(filename, dest):
-                    got_it = True
-                    break
+            # ── 1. Try GitHub Releases first ─────────────────────────────
+            gh_filename = GITHUB_FILES.get(key)
+            if gh_filename:
+                url = f"{GITHUB_RELEASE_BASE}/{gh_filename}"
+                logger.info("GitHub Release: %s → %s", gh_filename, key)
+                got_it = self._try_url(url, dest)
+                if got_it:
+                    logger.info("✅ Got %s from GitHub Releases", key)
+
+            # ── 2. Zenodo fallback ────────────────────────────────────────
+            if not got_it:
+                logger.info("GitHub failed for %s — trying Zenodo …", key)
+                for zenodo_name in FILENAME_ALTERNATIVES[key]:
+                    logger.info("  Zenodo: %s", zenodo_name)
+                    if self._try_zenodo(zenodo_name, dest):
+                        got_it = True
+                        logger.info("✅ Got %s from Zenodo", key)
+                        break
+
+            if not got_it:
+                logger.info("❌ Not available: %s (optional)", key)
 
             results[key] = got_it
-            if not got_it:
-                logger.info("Not found on Zenodo: %s (optional)", key)
 
-        # ── Evaluate result ──────────────────────────────────────────────
+        # ── Evaluate result ───────────────────────────────────────────────
         got  = [k for k, v in results.items() if v]
         miss = [k for k, v in results.items() if not v]
 
@@ -226,22 +270,24 @@ class BattLeDIMLoader:
 
         if not scada_ok:
             return False, (
-                f"❌ Could not download SCADA data from Zenodo.\n"
-                f"Please download manually from:\n"
-                f"https://zenodo.org/records/{ZENODO_RECORD_ID}\n"
-                f"and place files in 'data/battledim/'"
+                "❌ Не удалось скачать SCADA данные.\n"
+                f"Попробуй вручную с GitHub:\n"
+                f"  {GITHUB_RELEASE_BASE}\n"
+                f"или с Zenodo:\n"
+                f"  https://zenodo.org/records/{ZENODO_RECORD_ID}\n"
+                "и положи файлы в папку 'data/battledim/'"
             )
 
         if miss:
             return True, (
-                f"✅ Downloaded: {got}\n"
-                f"⚠️ Not found on Zenodo (optional): {miss}\n"
-                f"App works fine without them."
+                f"✅ Скачано: {got}\n"
+                f"⚠️ Не найдено (опционально): {miss}\n"
+                f"Приложение работает без них."
             )
 
-        return True, f"✅ All BattLeDIM files downloaded! ({got})"
+        return True, f"✅ Все файлы BattLeDIM загружены! ({got})"
 
-    # ── Data loading ─────────────────────────────────────────────────────
+    # ── Data loading ──────────────────────────────────────────────────────
 
     def load_scada_2018(self) -> Optional[Dict[str, pd.DataFrame]]:
         path = self._resolve_path("scada_2018")
@@ -282,9 +328,11 @@ class BattLeDIMLoader:
     def get_network_statistics(self) -> Dict[str, Any]:
         """Published L-Town stats — optionally parsed from INP."""
         stats: Dict[str, Any] = {
-            "n_junctions": 782, "n_pipes": 909,
-            "total_length_km": 42.6, "n_leaks_2019": 23,
-            "doi": "10.5281/zenodo.4017659",
+            "n_junctions":      782,
+            "n_pipes":          909,
+            "total_length_km":  42.6,
+            "n_leaks_2019":     23,
+            "doi":    "10.5281/zenodo.4017659",
             "source": "BattLeDIM 2020 — L-Town, Limassol, Cyprus",
             "status": "HARDCODED",
         }
@@ -307,7 +355,7 @@ class BattLeDIMLoader:
 
     def get_pressure_timeseries(self,
                                 year: int = 2018,
-                                day: int = 1) -> Optional[pd.DataFrame]:
+                                day:  int = 1) -> Optional[pd.DataFrame]:
         fn = self.load_scada_2018 if year == 2018 else self.load_scada_2019
         result = fn()
         if result is None:
@@ -340,15 +388,16 @@ def get_loader() -> BattLeDIMLoader:
 
 def initialize_battledim(show_progress: bool = False) -> Tuple[bool, str]:
     """
-    Check BattLeDIM presence; download from Zenodo if missing.
-    Returns (success, message).  Success = at least SCADA files present.
+    Check BattLeDIM presence; download if missing.
+    Tries GitHub Releases first, then Zenodo.
+    Returns (success, message). Success = at least SCADA files present.
     """
     loader = get_loader()
     if loader.required_files_present():
         status = loader.check_files_exist()
         have   = [k for k, v in status.items() if v]
-        return True, f"✅ BattLeDIM ready — files present: {have}"
-    logger.info("BattLeDIM missing — downloading from Zenodo …")
+        return True, f"✅ BattLeDIM готов — файлы присутствуют: {have}"
+    logger.info("BattLeDIM отсутствует — скачиваем …")
     return loader.download_dataset()
 
 
@@ -363,7 +412,7 @@ if __name__ == "__main__":
               f"{get_real_pipe_wear(city)}% | {get_estimated_pipe_age(city)} лет")
 
     loader = get_loader()
-    print("\nFile status:", loader.check_files_exist())
+    print("\nСтатус файлов:", loader.check_files_exist())
     ok, msg = initialize_battledim()
-    print(f"Init: {ok} — {msg}")
-    print("Stats:", loader.get_network_statistics())
+    print(f"Инициализация: {ok} — {msg}")
+    print("Статистика сети:", loader.get_network_statistics())
