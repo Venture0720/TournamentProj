@@ -1,6 +1,6 @@
-# Smart Shygyn PRO v3 — requirements.txt
+# Smart Shygyn PRO v3 - requirements.txt
 
-# ── Core UI & Visualization ───────────────────────────────────────────
+# Core UI & Visualization
 streamlit>=1.28.0
 pandas>=2.0.0
 numpy>=1.24.0
@@ -9,16 +9,16 @@ matplotlib>=3.7.0
 folium>=0.14.0
 streamlit-folium>=0.15.0
 
-# ── Hydraulic Simulation ──────────────────────────────────────────────
+# Hydraulic Simulation
 wntr>=1.2.0
 networkx>=3.1
 
-# ── Data & Files ──────────────────────────────────────────────────────
+# Data & Files
 scipy>=1.11.0
 openpyxl>=3.1.0
 xlrd>=2.0.1
 requests>=2.31.0
 
-# ── ML Engine (Isolation Forest) ──────────────────────────────────────
+# ML Engine (Isolation Forest)
 scikit-learn>=1.3.0
 joblib>=1.3.0
