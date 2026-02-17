@@ -9,6 +9,6 @@ scipy
 folium
 streamlit-folium
 requests
-gdown>=5.1.0
 openpyxl>=3.1.0
 xlrd>=2.0.1
+gdown>=5.1.0
