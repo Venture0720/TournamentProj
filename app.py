@@ -7,6 +7,7 @@ INTEGRATED: Real-time weather tracking with Open-Meteo API.
 INTEGRATED: BattLeDIM real dataset (L-Town Cyprus) — full leak detection analysis.
 INTEGRATED: Real Kazakhstan water data (tariffs, pipe wear, network stats).
 REFACTORED: Memory safety (gc.collect before simulation), robust error handling.
+UPDATED v3.1: Added ML Engine (Isolation Forest), Business Model (ROI), Alerts, Live Demo tabs.
 """
 
 import gc
@@ -50,6 +51,19 @@ from data_loader import (
 
 # Import config
 from config import CONFIG
+
+# ── NEW: Optional modules (graceful fallback if files not yet added) ──────
+try:
+    from demo_mode import render_alerts_tab, render_demo_tab
+    _DEMO_OK = True
+except ImportError:
+    _DEMO_OK = False
+
+try:
+    from business_model import render_business_tab
+    _BIZ_OK = True
+except ImportError:
+    _BIZ_OK = False
 
 logger = logging.getLogger("smart_shygyn.app")
 
@@ -787,6 +801,12 @@ def render_sidebar():
     else:
         st.sidebar.info("🌍 BattleDIM: загрузи во вкладке")
 
+    # NEW: optional modules status in sidebar
+    if _DEMO_OK:
+        st.sidebar.success("🚨 Алёрты + Live Демо ✅")
+    if _BIZ_OK:
+        st.sidebar.success("💼 Бизнес-модель ✅")
+
     run_simulation = st.sidebar.button(
         "🚀 RUN SIMULATION", type="primary", use_container_width=True
     )
@@ -846,11 +866,13 @@ def render_welcome(config: dict):
             </div>
         </div>
         <div style="display:flex; gap:24px; flex-wrap:wrap; margin-top:8px;">
-            <span style="color:{'#10b981'}; font-weight:600; font-size:13px;">✅ WNTR/EPANET Physics</span>
-            <span style="color:{'#3b82f6'}; font-weight:600; font-size:13px;">✅ BattLeDIM Validated</span>
-            <span style="color:{'#f59e0b'}; font-weight:600; font-size:13px;">✅ Real KZ Tariffs 2025</span>
-            <span style="color:{'#a855f7'}; font-weight:600; font-size:13px;">✅ Live Weather API</span>
-            <span style="color:{'#06b6d4'}; font-weight:600; font-size:13px;">✅ N-1 Contingency</span>
+            <span style="color:#10b981; font-weight:600; font-size:13px;">✅ WNTR/EPANET Physics</span>
+            <span style="color:#3b82f6; font-weight:600; font-size:13px;">✅ BattLeDIM Validated</span>
+            <span style="color:#f59e0b; font-weight:600; font-size:13px;">✅ Real KZ Tariffs 2025</span>
+            <span style="color:#a855f7; font-weight:600; font-size:13px;">✅ Live Weather API</span>
+            <span style="color:#06b6d4; font-weight:600; font-size:13px;">✅ N-1 Contingency</span>
+            <span style="color:#ef4444; font-weight:600; font-size:13px;">✅ ML Isolation Forest</span>
+            <span style="color:#10b981; font-weight:600; font-size:13px;">✅ Бизнес ROI · Live Демо</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -864,10 +886,10 @@ def render_welcome(config: dict):
     features = [
         ("🏙️", "Multi-City",       "Almaty · Astana · Turkestan",   "Elevation physics"),
         ("🔬", "Advanced Physics",  "H-W aging · Torricelli leaks",  "Emitter modeling"),
-        ("🧠", "Smart Detection",   "30% sensor coverage",           "Residual Matrix EKF"),
+        ("🧠", "ML Detection",      "Isolation Forest + Z-score",    "Ensemble + Comparison"),
         ("⚡", "N-1 Analysis",      "Pipe failure simulation",        "Impact assessment"),
-        ("💰", "Full ROI Engine",   "CAPEX/OPEX/Payback",            "Carbon footprint"),
-        ("🌍", "BattLeDIM",         "Real Cyprus dataset",            "DOI: 10.5281/zenodo"),
+        ("🚨", "Alert System",      "CRITICAL / WARNING / INFO",     "CSV export"),
+        ("💼", "Бизнес-модель",     "ROI 39:1 · TAM/SAM/SOM",       "SaaS тиры"),
     ]
     cols = st.columns(len(features))
     for col, (icon, title, line1, line2) in zip(cols, features):
@@ -1031,16 +1053,35 @@ def render_dashboard(results: dict, config: dict):
     st.markdown("---")
 
     # ═══════════════════════════════════════════════════════════════════
-    # TABS
+    # TABS — динамически расширяем список
     # ═══════════════════════════════════════════════════════════════════
-
-    tab_map, tab_hydro, tab_econ, tab_stress, tab_battledim = st.tabs([
+    tab_labels = [
         "🗺️ Real-time Network Map",
         "📈 Hydraulic Diagnostics",
         "💰 Economic ROI Analysis",
         "🔬 Stress-Test & N-1",
         "🌍 BattLeDIM Анализ",
-    ])
+    ]
+    if _DEMO_OK:
+        tab_labels += ["🚨 Алёрты", "▶ Live Демо"]
+    if _BIZ_OK:
+        tab_labels.append("💼 Бизнес-модель")
+
+    all_tabs = st.tabs(tab_labels)
+
+    tab_map      = all_tabs[0]
+    tab_hydro    = all_tabs[1]
+    tab_econ     = all_tabs[2]
+    tab_stress   = all_tabs[3]
+    tab_battledim = all_tabs[4]
+
+    # Индексы опциональных вкладок
+    idx = 5
+    tab_alerts = all_tabs[idx] if _DEMO_OK else None
+    tab_demo   = all_tabs[idx + 1] if _DEMO_OK else None
+    if _DEMO_OK:
+        idx += 2
+    tab_biz = all_tabs[idx] if _BIZ_OK else None
 
     # ─────────────────────────────────────────────────────────────────────
     # TAB 1: MAP
@@ -1306,6 +1347,27 @@ def render_dashboard(results: dict, config: dict):
     # ─────────────────────────────────────────────────────────────────────
     with tab_battledim:
         render_battledim_tab(dark_mode=dm)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TAB 6: ALERTS (новая вкладка)
+    # ─────────────────────────────────────────────────────────────────────
+    if _DEMO_OK and tab_alerts is not None:
+        with tab_alerts:
+            render_alerts_tab(results, config, dark_mode=dm)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TAB 7: LIVE DEMO (новая вкладка)
+    # ─────────────────────────────────────────────────────────────────────
+    if _DEMO_OK and tab_demo is not None:
+        with tab_demo:
+            render_demo_tab(dark_mode=dm)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # TAB 8: BUSINESS MODEL (новая вкладка)
+    # ─────────────────────────────────────────────────────────────────────
+    if _BIZ_OK and tab_biz is not None:
+        with tab_biz:
+            render_business_tab(dark_mode=dm, city_name=results["city_config"]["name"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
