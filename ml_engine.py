@@ -6,13 +6,9 @@ Smart Shygyn PRO v3 — ML Engine
     from ml_engine import get_isolation_forest_model, detect_anomalies_ml, METHODS
 
 Методы:
-    "Z-score"         — текущий базовый алгоритм (из battledim_analysis.py)
+    "Z-score"          — базовый алгоритм (из battledim_analysis.py)
     "Isolation Forest" — unsupervised ML, scikit-learn
-    "Ensemble"        — аномалия если ХОТЯ БЫ ОДИН метод обнаружил
-
-Требования (добавить в requirements.txt):
-    scikit-learn>=1.3.0
-    joblib>=1.3.0
+    "Ensemble"         — аномалия если ХОТЯ БЫ ОДИН метод обнаружил
 """
 
 import logging
@@ -28,7 +24,6 @@ logger = logging.getLogger("smart_shygyn.ml_engine")
 try:
     from sklearn.ensemble import IsolationForest
     from sklearn.preprocessing import StandardScaler
-    import joblib
     _SKLEARN_OK = True
 except ImportError:
     _SKLEARN_OK = False
@@ -54,7 +49,6 @@ METHODS = ["Z-score", "Isolation Forest", "Ensemble"]
 class IsolationForestDetector:
     """
     Unsupervised детектор аномалий на основе Isolation Forest.
-
     Обучается на нормальных данных 2018 года,
     предсказывает аномалии в данных 2019 года.
     """
@@ -75,14 +69,9 @@ class IsolationForestDetector:
         self.scaler: Optional[StandardScaler] = None
         self._trained = False
 
-    # ── Обучение ───────────────────────────────────────────────────────
-
     def train(self, scada_2018_df: pd.DataFrame) -> None:
         """
         Обучить модель на данных 2018 (считаются нормальными).
-
-        Args:
-            scada_2018_df: DataFrame с давлением датчиков (строки=время, столбцы=датчики)
         """
         data = scada_2018_df.dropna(axis=1, how="all").dropna(how="any")
         if data.empty:
@@ -105,19 +94,15 @@ class IsolationForestDetector:
             len(data), len(self._feature_cols)
         )
 
-    # ── Предсказание ───────────────────────────────────────────────────
-
     def _prepare(self, scada_df: pd.DataFrame) -> np.ndarray:
         """Выровнять столбцы и нормализовать данные."""
         if not self._trained:
             raise RuntimeError("Сначала вызовите .train()")
 
-        # Выбираем только те столбцы, что были при обучении
         common = [c for c in self._feature_cols if c in scada_df.columns]
         if not common:
             raise ValueError("Нет общих датчиков между 2018 и 2019 данными")
 
-        # Заполняем отсутствующие столбцы нулями
         df_aligned = pd.DataFrame(index=scada_df.index)
         for col in self._feature_cols:
             if col in scada_df.columns:
@@ -131,12 +116,10 @@ class IsolationForestDetector:
     def predict(self, scada_df: pd.DataFrame) -> pd.Series:
         """
         Обнаружить аномалии.
-
-        Returns:
-            pd.Series[bool] — True = аномалия, индекс как у scada_df
+        Returns pd.Series[bool] — True = аномалия.
         """
         X = self._prepare(scada_df)
-        preds = self.model.predict(X)            # -1 = аномалия, 1 = нормально
+        preds = self.model.predict(X)   # -1 = аномалия, 1 = нормально
         flags = pd.Series(preds == -1, index=scada_df.index)
         logger.debug("IF anomalies: %d / %d", flags.sum(), len(flags))
         return flags
@@ -145,13 +128,10 @@ class IsolationForestDetector:
         """
         Непрерывная оценка аномальности в [0, 1].
         Выше = аномальнее.
-
-        Returns:
-            pd.Series[float] с индексом как у scada_df
         """
         X = self._prepare(scada_df)
-        raw_scores = self.model.decision_function(X)  # отрицательный = аномальнее
-        inverted = -raw_scores                          # чем выше — тем аномальнее
+        raw_scores = self.model.decision_function(X)
+        inverted = -raw_scores
 
         s_min, s_max = inverted.min(), inverted.max()
         if s_max - s_min < 1e-9:
@@ -179,23 +159,13 @@ def get_isolation_forest_model(
 ) -> IsolationForestDetector:
     """
     Получить (или создать) обученный IsolationForestDetector.
-
     Если Streamlit доступен — использует @st.cache_resource для кэша.
-    При изменении данных 2018 модель переобучается автоматически.
-
-    Args:
-        scada_2018_df: DataFrame SCADA 2018
-        contamination: Ожидаемая доля аномалий (0–0.5)
-
-    Returns:
-        Обученный IsolationForestDetector
     """
     if not _SKLEARN_OK:
         raise ImportError("pip install scikit-learn>=1.3.0")
 
     cache_key = _df_hash(scada_2018_df) + f"_{contamination}"
 
-    # Используем Streamlit кэш если доступен
     if _STREAMLIT_OK:
         return _cached_model(cache_key, scada_2018_df, contamination)
     else:
@@ -211,13 +181,12 @@ def _build_model(
     return detector
 
 
-# Streamlit кэш-обёртка (определяем только если st доступен)
 if _STREAMLIT_OK:
     import streamlit as st
 
     @st.cache_resource
     def _cached_model(
-        cache_key: str,  # noqa: используется для инвалидации кэша
+        cache_key: str,
         scada_2018_df: pd.DataFrame,
         contamination: float,
     ) -> IsolationForestDetector:
@@ -234,16 +203,13 @@ else:
 
 def detect_zscore(
     scada_2019_df: pd.DataFrame,
-    baseline: "pd.DataFrame",       # базовый профиль из battledim_analysis.build_baseline
+    baseline: "pd.DataFrame",
     z_threshold: float = 3.0,
     min_sensors: int = 2,
 ) -> pd.Series:
     """
     Z-score детекция (алгоритм из battledim_analysis.py).
     Вынесен сюда для использования в Ensemble.
-
-    Returns:
-        pd.Series[bool]
     """
     sensors = [c for c in scada_2019_df.columns
                if f"mean_{c}" in baseline.columns
@@ -288,7 +254,7 @@ def detect_anomalies_ml(
     Единый интерфейс детекции аномалий для всех методов.
 
     Args:
-        scada_2019_df: SCADA данные 2019 (строки=время, столбцы=датчики)
+        scada_2019_df: SCADA данные 2019
         method:        "Z-score" | "Isolation Forest" | "Ensemble"
         scada_2018_df: Данные 2018 (нужны для IF и Ensemble)
         baseline:      Результат build_baseline() (нужен для Z-score и Ensemble)
@@ -298,8 +264,6 @@ def detect_anomalies_ml(
 
     Returns:
         (anomaly_flags, meta)
-        - anomaly_flags: pd.Series[bool]
-        - meta: dict с метриками каждого метода и anomaly_score (IF/Ensemble)
     """
     meta: Dict[str, Any] = {"method": method}
 
@@ -325,25 +289,23 @@ def detect_anomalies_ml(
             raise ValueError("Для Isolation Forest нужны данные 2018")
 
         detector = get_isolation_forest_model(scada_2018_df, contamination)
-        flags       = detector.predict(scada_2019_df)
-        scores      = detector.anomaly_score(scada_2019_df)
-        meta["if_detections"]  = int(flags.sum())
-        meta["if_score_mean"]  = float(scores.mean())
-        meta["anomaly_score"]  = scores
+        flags    = detector.predict(scada_2019_df)
+        scores   = detector.anomaly_score(scada_2019_df)
+        meta["if_detections"] = int(flags.sum())
+        meta["if_score_mean"] = float(scores.mean())
+        meta["anomaly_score"] = scores
         return flags, meta
 
     # ── Ensemble ──────────────────────────────────────────────────────
     if method == "Ensemble":
         results: Dict[str, pd.Series] = {}
 
-        # Z-score (если baseline есть)
         if baseline is not None:
             results["Z-score"] = detect_zscore(
                 scada_2019_df, baseline, z_threshold, min_sensors
             )
             meta["z_score_detections"] = int(results["Z-score"].sum())
 
-        # Isolation Forest (если 2018 данные есть)
         if scada_2018_df is not None and _SKLEARN_OK:
             detector = get_isolation_forest_model(scada_2018_df, contamination)
             results["IF"] = detector.predict(scada_2019_df)
@@ -356,7 +318,6 @@ def detect_anomalies_ml(
         if not results:
             return pd.Series(False, index=scada_2019_df.index), {"method": "Ensemble (empty)"}
 
-        # Объединение: аномалия если ХОТЯ БЫ ОДИН метод сработал
         combined = pd.Series(False, index=scada_2019_df.index)
         for flags in results.values():
             combined = combined | flags
@@ -383,9 +344,6 @@ def compare_methods(
 ) -> pd.DataFrame:
     """
     Запустить все три метода и вернуть сравнительную таблицу.
-
-    Returns:
-        pd.DataFrame со столбцами [Метод, Recall%, Precision%, F1%, TTD (ч), Детекций]
     """
     from battledim_analysis import compute_metrics
 
@@ -423,48 +381,3 @@ def compare_methods(
             })
 
     return pd.DataFrame(rows)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# SELF-TEST
-# ══════════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Smart Shygyn — ML Engine self-test")
-    print("=" * 60)
-
-    # Synthetic data
-    np.random.seed(42)
-    n_sensors = 10
-    t_2018 = pd.date_range("2018-01-01", periods=288 * 30, freq="5min")
-    df_2018 = pd.DataFrame(
-        np.random.normal(3.0, 0.2, (len(t_2018), n_sensors)),
-        index=t_2018,
-        columns=[f"S{i:02d}" for i in range(n_sensors)],
-    )
-
-    # 2019 with injected anomalies
-    t_2019 = pd.date_range("2019-01-01", periods=288 * 10, freq="5min")
-    df_2019 = pd.DataFrame(
-        np.random.normal(3.0, 0.2, (len(t_2019), n_sensors)),
-        index=t_2019,
-        columns=[f"S{i:02d}" for i in range(n_sensors)],
-    )
-    df_2019.iloc[500:600] -= 1.5   # Аномалия — провал давления
-
-    if _SKLEARN_OK:
-        detector = IsolationForestDetector()
-        detector.train(df_2018)
-        flags = detector.predict(df_2019)
-        scores = detector.anomaly_score(df_2019)
-        print(f"[IF] Аномалий обнаружено: {flags.sum()} / {len(flags)}")
-        print(f"[IF] Средний anomaly_score: {scores.mean():.4f}")
-        print(f"[IF] Max score в зоне утечки [500:600]: {scores.iloc[500:600].mean():.4f}")
-        assert flags.iloc[500:600].sum() > 50, "IF должен обнаружить большинство аномалий"
-        print("✅ IsolationForest: тест пройден")
-    else:
-        print("⚠️  scikit-learn не установлен, тест пропущен")
-
-    print("\n✅ ML Engine готов к интеграции")
-    print("   from ml_engine import detect_anomalies_ml, METHODS, compare_methods")
