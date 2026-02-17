@@ -3,10 +3,7 @@ Smart Shygyn PRO v3 — Demo Mode & Alert System
 Раздел 4 ТЗ: Демо "живая симуляция" + вкладка Алёртов.
 
 Использование в app.py:
-    from demo_mode import render_demo_tab, render_alerts_tab, AlertSystem
-
-    # В списке вкладок добавить:
-    tab_alerts, tab_demo = st.tabs(["🚨 Алёрты", "▶ Live Демо"])
+    from demo_mode import render_demo_tab, render_alerts_tab
 
     with tab_alerts:
         render_alerts_tab(results, config, dark_mode=dm)
@@ -33,7 +30,6 @@ import streamlit as st
 class AlertLevel:
     CRITICAL = "CRITICAL"
     WARNING  = "WARNING"
-    INFO     = "INFO"
 
 
 def classify_alert(
@@ -47,13 +43,12 @@ def classify_alert(
     Логика классификации алёртов из ТЗ:
       CRITICAL:  pressure < min AND flow > 2× normal
       WARNING:   pressure < min OR anomaly_score > 0.7
-      INFO:      любая детекция алгоритма
     """
     if pressure_bar < min_pressure_bar and flow_lps > 2 * normal_flow_lps:
         return AlertLevel.CRITICAL
     if pressure_bar < min_pressure_bar or anomaly_score > 0.7:
         return AlertLevel.WARNING
-    return AlertLevel.INFO
+    return None
 
 
 def generate_alerts_from_results(results: Dict, config: Dict) -> List[Dict]:
@@ -62,7 +57,6 @@ def generate_alerts_from_results(results: Dict, config: Dict) -> List[Dict]:
     """
     alerts = []
     df      = results["dataframe"]
-    econ    = results["economics"]
     thresh  = config.get("leak_threshold", 2.5)
     normal_flow = df["Flow Rate (L/s)"].median()
 
@@ -92,7 +86,6 @@ def _level_color(level: str, dark: bool) -> str:
     colors = {
         AlertLevel.CRITICAL: "rgba(239,68,68,0.25)",
         AlertLevel.WARNING:  "rgba(245,158,11,0.20)",
-        AlertLevel.INFO:     "rgba(59,130,246,0.15)",
     }
     return colors.get(level, "")
 
@@ -139,11 +132,11 @@ def render_alerts_tab(
         return
 
     # Фильтры
-    fc1, fc2 = st.columns([1, 3])
+    fc1, _ = st.columns([1, 3])
     with fc1:
         filter_level = st.multiselect(
             "Фильтр по уровню",
-            [AlertLevel.CRITICAL, AlertLevel.WARNING, AlertLevel.INFO],
+            [AlertLevel.CRITICAL, AlertLevel.WARNING],
             default=[AlertLevel.CRITICAL, AlertLevel.WARNING],
         )
 
@@ -229,8 +222,6 @@ def render_alerts_tab(
 def render_demo_tab(dark_mode: bool = True):
     """
     Вкладка '▶ Live Демо' — живая симуляция для питча.
-
-    Судьи запомнят если увидят реальное обнаружение в реальном времени.
     """
     st.markdown("## ▶ Live Симуляция — для питча")
     st.markdown(
@@ -259,31 +250,29 @@ def render_demo_tab(dark_mode: bool = True):
         run_demo = st.button("▶ ЗАПУСТИТЬ СИМУЛЯЦИЮ", use_container_width=True, type="primary")
 
     if not run_demo:
-        # Превью статичного состояния
         _render_demo_static(dark_mode=dark_mode, city=sim_city)
         return
 
     # ── ЗАПУСК ЖИВОЙ СИМУЛЯЦИИ ─────────────────────────────────────────
     TOTAL_STEPS = 30
     LEAK_STEP   = sim_leak_hour
-    DETECT_STEP = LEAK_STEP + random.randint(2, 5)   # Алгоритм находит через 2-5 шагов
+    DETECT_STEP = LEAK_STEP + random.randint(2, 5)
 
-    # Утечка в произвольном узле
-    leak_nodes = [f"N_{random.randint(0,3)}_{random.randint(0,3)}" for _ in range(3)]
-    leak_node  = random.choice(["N_2_2", "N_1_3", "N_3_1"])
+    leak_node = random.choice(["N_2_2", "N_1_3", "N_3_1"])
 
     # Пустые контейнеры
-    status_box   = col_status.empty()
-    chart_box    = st.empty()
-    alert_box    = st.empty()
-    metrics_box  = st.empty()
+    status_box  = col_status.empty()
+    chart_box   = st.empty()
+    alert_box   = st.empty()
+    metrics_box = st.empty()
 
-    pressures    = []
-    detected     = False
+    pressures   = []
+    detected    = False
     detection_ts = None
+    ttd_hours    = 0
+    lost_liters  = 0
 
     for step in range(1, TOTAL_STEPS + 1):
-        # Генерация давления
         base_pressure = 3.2 + 0.3 * np.sin(step * np.pi / 12)
 
         if step >= LEAK_STEP:
@@ -294,12 +283,11 @@ def render_demo_tab(dark_mode: bool = True):
 
         pressures.append(max(0.5, pressure))
 
-        # Обнаружение
         if step == DETECT_STEP and not detected:
             detected     = True
             detection_ts = step
             ttd_hours    = detection_ts - LEAK_STEP
-            lost_liters  = ttd_hours * 60 * 30   # ~30 л/мин утечка
+            lost_liters  = ttd_hours * 60 * 30
 
         # ── Статус ──────────────────────────────────────────────────────
         if step < LEAK_STEP:
@@ -316,31 +304,17 @@ def render_demo_tab(dark_mode: bool = True):
             steps_shown = list(range(1, step + 1))
 
             fig = go.Figure()
-            # Нормальная зона
             fig.add_hrect(y0=2.5, y1=5.0, fillcolor="rgba(16,185,129,0.08)",
                           layer="below", line_width=0)
             fig.add_hrect(y0=0, y1=2.5, fillcolor="rgba(239,68,68,0.08)",
                           layer="below", line_width=0)
 
-            # Линия давления
-            line_colors = []
-            for i, p in enumerate(pressures):
-                s = i + 1
-                if s >= DETECT_STEP and detected:
-                    line_colors.append("#ef4444")
-                elif s >= LEAK_STEP:
-                    line_colors.append("#f59e0b")
-                else:
-                    line_colors.append("#3b82f6")
-
-            # Основная линия
             fig.add_trace(go.Scatter(
                 x=steps_shown, y=pressures,
                 line=dict(color="#3b82f6", width=2.5),
                 name="Давление (бар)",
             ))
 
-            # Маркер утечки
             if step >= LEAK_STEP:
                 fig.add_vline(x=LEAK_STEP, line_color="#f59e0b",
                               line_dash="dash", line_width=2,
@@ -348,7 +322,6 @@ def render_demo_tab(dark_mode: bool = True):
                               annotation_font_color="#f59e0b",
                               annotation_position="top right")
 
-            # Маркер детекции
             if detected:
                 fig.add_vline(x=DETECT_STEP, line_color="#ef4444",
                               line_width=2.5,
@@ -363,7 +336,6 @@ def render_demo_tab(dark_mode: bool = True):
                     name="Момент детекции",
                 ))
 
-            # Порог
             fig.add_hline(y=2.5, line_dash="dot", line_color="#94a3b8", line_width=1.5,
                           annotation_text="Мин. норматив 2.5 бар", annotation_position="right")
 
@@ -438,7 +410,6 @@ def _render_demo_static(dark_mode: bool, city: str):
         "Нажми **▶ ЗАПУСТИТЬ СИМУЛЯЦИЮ** выше чтобы начать."
     )
 
-    # Пример графика (нормальный режим)
     hours = np.linspace(0, 24, 100)
     pressure_normal = 3.0 + 0.4 * np.sin(hours * np.pi / 12) + np.random.normal(0, 0.03, 100)
 
@@ -462,40 +433,3 @@ def _render_demo_static(dark_mode: bool, city: str):
         margin=dict(l=60, r=40, t=50, b=40),
     )
     st.plotly_chart(fig, use_container_width=True)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# ИНСТРУКЦИЯ ПО ИНТЕГРАЦИИ В APP.PY
-# ══════════════════════════════════════════════════════════════════════
-"""
-ДОБАВИТЬ В app.py:
-
-1. В начало файла (импорты):
-   from demo_mode import render_demo_tab, render_alerts_tab
-   from business_model import render_business_tab
-
-2. В render_dashboard(), найти строку с определением табов:
-   tab_map, tab_hydro, tab_econ, tab_stress, tab_battledim = st.tabs([...])
-
-   ЗАМЕНИТЬ на:
-   tab_map, tab_hydro, tab_econ, tab_stress, tab_battledim, tab_alerts, tab_demo, tab_business = st.tabs([
-       "🗺️ Карта",
-       "📈 Гидравлика",
-       "💰 ROI",
-       "🔬 Стресс-тест",
-       "🌍 BattLeDIM",
-       "🚨 Алёрты",
-       "▶ Live Демо",
-       "💼 Бизнес-модель",
-   ])
-
-3. В конце render_dashboard() добавить:
-   with tab_alerts:
-       render_alerts_tab(results, config, dark_mode=dm)
-
-   with tab_demo:
-       render_demo_tab(dark_mode=dm)
-
-   with tab_business:
-       render_business_tab(dark_mode=dm, city_name=results["city_config"]["name"])
-"""
