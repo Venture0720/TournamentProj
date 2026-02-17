@@ -1,14 +1,12 @@
 """
 Smart Shygyn PRO v3 — Data Loader
-BattLeDIM dataset integration and Kazakhstan real data.
+BattLeDIM dataset + Kazakhstan real data.
 
-Actual filenames on Zenodo 4017659 (official BattLeDIM):
-  "2018 SCADA.xlsx"   ← space, not underscore
-  "2019 SCADA.xlsx"
-  "L-Town.inp"
-  "Leak_Labels.xlsx"  ← released separately after competition
-
-The leaks file is OPTIONAL — 3 SCADA + INP are sufficient for the app.
+Strategy:
+- Download from Zenodo via direct ?download=1 URLs (no gdown needed)
+- ALL files are optional — app works with whatever it gets
+- Success = at least one SCADA file downloaded
+- No Google Drive (always rate-limited)
 """
 
 import logging
@@ -67,33 +65,19 @@ def get_estimated_pipe_age(city_name: str) -> int:
 
 BATTLEDIM_DATA_DIR = Path("data/battledim")
 ZENODO_RECORD_ID   = "4017659"
-GDRIVE_FOLDER_ID   = "1OL2xEGTKEA-eoaxRgd0n8vUEsGzj9Ngq"
 
-# ── REQUIRED files (3 of 4 — leaks is optional) ──────────────────────────
-BATTLEDIM_REQUIRED = {
-    "scada_2018":  "2018 SCADA.xlsx",    # space in official Zenodo filename!
-    "scada_2019":  "2019 SCADA.xlsx",
-    "network_inp": "L-Town.inp",
-}
-
-# ── OPTIONAL: leak labels (released after competition, not always on Zenodo)
-BATTLEDIM_OPTIONAL = {
-    "leaks_2019": "Leak_Labels.xlsx",
-}
-
-BATTLEDIM_FILES = {**BATTLEDIM_REQUIRED, **BATTLEDIM_OPTIONAL}
-
-# All acceptable name variants per key (covers different uploads/mirrors)
+# All known filenames for each key (Zenodo uses spaces, not underscores)
+# We try EVERY variant until one downloads successfully.
 FILENAME_ALTERNATIVES: Dict[str, List[str]] = {
     "scada_2018": [
-        "2018 SCADA.xlsx",     # official Zenodo name (space)
-        "2018_SCADA.xlsx",     # underscore variant
+        "2018 SCADA.xlsx",
+        "2018_SCADA.xlsx",
         "2018 SCADA.xls",
         "2018_SCADA.xls",
         "SCADA_2018.xlsx",
     ],
     "scada_2019": [
-        "2019 SCADA.xlsx",     # official Zenodo name (space)
+        "2019 SCADA.xlsx",
         "2019_SCADA.xlsx",
         "2019 SCADA.xls",
         "2019_SCADA.xls",
@@ -101,31 +85,31 @@ FILENAME_ALTERNATIVES: Dict[str, List[str]] = {
     ],
     "network_inp": [
         "L-Town.inp",
+        "L-TOWN.inp",
         "l-town.inp",
-        "L_Town.inp",
         "LTOWN.inp",
         "ltown.inp",
+        "L_Town.inp",
         "network.inp",
+        "L-Town.inpx",
     ],
     "leaks_2019": [
         "Leak_Labels.xlsx",
         "Leak_Labels.csv",
-        "2019_Leaks.csv",
         "2019 Leaks.csv",
-        "2019_Leaks.xlsx",
+        "2019_Leaks.csv",
         "leaks.csv",
-        "leak_labels.csv",
         "GroundTruth.csv",
-        "GroundTruth.xlsx",
     ],
 }
 
-# Zenodo direct-download URL pattern (works for all public records)
-def _zenodo_url(filename: str) -> str:
-    return (
-        f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
-        f"/files/{requests.utils.quote(filename)}?download=1"
-    )
+# Canonical local name to save each file as
+CANONICAL_NAMES = {
+    "scada_2018":  "2018_SCADA.xlsx",
+    "scada_2019":  "2019_SCADA.xlsx",
+    "network_inp": "L-Town.inp",
+    "leaks_2019":  "Leak_Labels.xlsx",
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -134,12 +118,8 @@ def _zenodo_url(filename: str) -> str:
 
 class BattLeDIMLoader:
     """
-    Loader for the BattLeDIM 2020 benchmark dataset.
-
-    Primary source : Zenodo 4017659 (direct HTTP, no auth)
-    Fallback       : Google Drive via gdown
-
-    L-Town, Limassol, Cyprus — 782 nodes | 909 pipes | 42.6 km | 23 leaks
+    Loader for BattLeDIM 2020 (L-Town, Limassol, Cyprus).
+    All files are optional — app degrades gracefully if any are missing.
     DOI: 10.5281/zenodo.4017659
     """
 
@@ -147,163 +127,123 @@ class BattLeDIMLoader:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── File resolution ──────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────────
 
     def _resolve_path(self, key: str) -> Optional[Path]:
-        """Return first existing, non-empty path for a dataset key."""
-        for name in FILENAME_ALTERNATIVES.get(key, [BATTLEDIM_FILES.get(key, "")]):
+        """Return first existing non-empty file for this key."""
+        all_names = FILENAME_ALTERNATIVES.get(key, []) + [CANONICAL_NAMES.get(key, "")]
+        for name in all_names:
+            if not name:
+                continue
             p = self.data_dir / name
             if p.exists() and p.stat().st_size > 200:
                 return p
         return None
 
     def check_files_exist(self) -> Dict[str, bool]:
-        return {key: self._resolve_path(key) is not None for key in BATTLEDIM_FILES}
+        return {key: self._resolve_path(key) is not None
+                for key in FILENAME_ALTERNATIVES}
 
     def required_files_present(self) -> bool:
-        """True when all REQUIRED files are present (leaks is optional)."""
-        return all(
-            self._resolve_path(k) is not None for k in BATTLEDIM_REQUIRED
-        )
+        """Minimum: at least one SCADA file must exist."""
+        return (self._resolve_path("scada_2018") is not None or
+                self._resolve_path("scada_2019") is not None)
 
     def all_files_present(self) -> bool:
-        """True when ALL files (including optional leaks) are present."""
-        return all(self._resolve_path(k) is not None for k in BATTLEDIM_FILES)
+        return all(self.check_files_exist().values())
 
-    # ── Single-file download ─────────────────────────────────────────────
+    # ── Download ─────────────────────────────────────────────────────────
 
-    def _download_file(self, url: str, dest: Path) -> bool:
-        """Stream-download url → dest. Returns True on success."""
+    def _try_download(self, zenodo_filename: str, local_dest: Path) -> bool:
+        """
+        Try to download one file from Zenodo using the ?download=1 URL.
+        Returns True on success.
+        """
+        # URL-encode spaces as %20
+        encoded = zenodo_filename.replace(" ", "%20")
+        url = (f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
+               f"/files/{encoded}?download=1")
         try:
-            headers = {"User-Agent": "SmartShygyn/3.0"}
-            with requests.get(url, stream=True, timeout=120, headers=headers) as r:
-                r.raise_for_status()
-                # Reject tiny HTML error pages
+            headers = {"User-Agent": "Mozilla/5.0 SmartShygyn/3.0"}
+            with requests.get(url, stream=True, timeout=120,
+                              headers=headers, allow_redirects=True) as r:
+                if r.status_code != 200:
+                    return False
+                # Reject HTML error pages
                 ct = r.headers.get("Content-Type", "")
                 if "text/html" in ct:
-                    logger.warning("Got HTML instead of file from %s", url)
                     return False
-                with open(dest, "wb") as f:
+                with open(local_dest, "wb") as f:
                     shutil.copyfileobj(r.raw, f)
 
-            if dest.exists() and dest.stat().st_size > 200:
-                logger.info("✓ %s (%.1f KB)", dest.name, dest.stat().st_size / 1024)
+            if local_dest.exists() and local_dest.stat().st_size > 200:
+                logger.info("✓ Downloaded %s (%.0f KB)",
+                            local_dest.name, local_dest.stat().st_size / 1024)
                 return True
 
-            dest.unlink(missing_ok=True)
+            local_dest.unlink(missing_ok=True)
             return False
-
         except Exception as exc:
-            logger.warning("Download failed %s: %s", url, exc)
-            dest.unlink(missing_ok=True)
+            logger.debug("  failed %s: %s", url, exc)
+            local_dest.unlink(missing_ok=True)
             return False
-
-    # ── Zenodo download ──────────────────────────────────────────────────
-
-    def download_via_zenodo(self) -> Tuple[bool, str]:
-        """
-        Download BattLeDIM files from Zenodo using their direct-download URL.
-
-        URL pattern:  https://zenodo.org/records/{id}/files/{name}?download=1
-        No API key needed — works for all CC-licensed public records.
-        """
-        downloaded, failed, skipped = [], [], []
-
-        for key, primary_name in BATTLEDIM_FILES.items():
-            is_optional = key in BATTLEDIM_OPTIONAL
-
-            if self._resolve_path(key) is not None:
-                downloaded.append(key)
-                continue
-
-            dest = self.data_dir / primary_name
-            success = False
-
-            # Try all alternative filenames on Zenodo
-            for alt_name in FILENAME_ALTERNATIVES.get(key, [primary_name]):
-                url = _zenodo_url(alt_name)
-                logger.info("Trying: %s", url)
-                if self._download_file(url, self.data_dir / alt_name):
-                    success = True
-                    downloaded.append(key)
-                    break
-
-            if not success:
-                if is_optional:
-                    skipped.append(key)
-                    logger.info("Optional file %s not found on Zenodo — skipping", key)
-                else:
-                    failed.append(key)
-                    logger.warning("Required file %s failed to download", key)
-
-        required_ok = all(k not in failed for k in BATTLEDIM_REQUIRED)
-
-        if failed:
-            return False, (
-                f"❌ Required files missing after Zenodo download: {failed}"
-            )
-        elif skipped:
-            return True, (
-                f"✅ Downloaded {len(downloaded)} file(s) from Zenodo "
-                f"(optional files not found: {skipped} — app works without them)"
-            )
-        else:
-            return True, f"✅ All {len(downloaded)} BattLeDIM files downloaded from Zenodo!"
-
-    # ── Google Drive fallback ────────────────────────────────────────────
-
-    def download_via_gdrive(self) -> Tuple[bool, str]:
-        """Fallback: download folder from Google Drive via gdown."""
-        try:
-            import gdown  # type: ignore
-        except ImportError:
-            return False, "gdown not installed"
-
-        folder_url = f"https://drive.google.com/drive/folders/{GDRIVE_FOLDER_ID}"
-        try:
-            output_parent = self.data_dir.parent
-            gdown.download_folder(
-                url=folder_url,
-                output=str(output_parent),
-                quiet=False,
-                use_cookies=False,
-                remaining_ok=True,
-            )
-            _merge_downloads(output_parent, self.data_dir)
-
-            if self.required_files_present():
-                return True, "✅ Downloaded from Google Drive"
-            found = [k for k, v in self.check_files_exist().items() if v]
-            return bool(found), f"Partial Google Drive download: {found}"
-
-        except Exception as exc:
-            return False, f"Google Drive error: {exc}"
-
-    # ── Master download ──────────────────────────────────────────────────
 
     def download_dataset(self) -> Tuple[bool, str]:
-        """Try Zenodo first, then Google Drive as fallback."""
-        ok, msg = self.download_via_zenodo()
-        if ok:
-            return ok, msg
+        """
+        Download all BattLeDIM files from Zenodo.
+        Tries every known filename variant.
+        All files are optional — returns success if ANY SCADA file downloaded.
+        """
+        results: Dict[str, bool] = {}
 
-        logger.warning("Zenodo incomplete (%s). Trying Google Drive …", msg)
-        ok2, msg2 = self.download_via_gdrive()
-        if ok2:
-            return ok2, msg2
+        for key, alt_names in FILENAME_ALTERNATIVES.items():
+            # Already have it?
+            if self._resolve_path(key) is not None:
+                results[key] = True
+                logger.info("Already present: %s", key)
+                continue
 
-        return False, (
-            f"❌ Both sources failed.\n"
-            f"  Zenodo: {msg}\n"
-            f"  Google Drive: {msg2}\n"
-            f"Manual download: https://zenodo.org/records/{ZENODO_RECORD_ID}\n"
-            f"Place files in: data/battledim/"
-        )
+            canonical = CANONICAL_NAMES[key]
+            got_it = False
+
+            for filename in alt_names:
+                # Save as canonical name to simplify later lookups
+                dest = self.data_dir / canonical
+                logger.info("Trying Zenodo: %s", filename)
+                if self._try_download(filename, dest):
+                    got_it = True
+                    break
+
+            results[key] = got_it
+            if not got_it:
+                logger.info("Not found on Zenodo: %s (optional)", key)
+
+        # ── Evaluate result ──────────────────────────────────────────────
+        got  = [k for k, v in results.items() if v]
+        miss = [k for k, v in results.items() if not v]
+
+        scada_ok = results.get("scada_2018") or results.get("scada_2019")
+
+        if not scada_ok:
+            return False, (
+                f"❌ Could not download SCADA data from Zenodo.\n"
+                f"Please download manually from:\n"
+                f"https://zenodo.org/records/{ZENODO_RECORD_ID}\n"
+                f"and place files in 'data/battledim/'"
+            )
+
+        if miss:
+            return True, (
+                f"✅ Downloaded: {got}\n"
+                f"⚠️ Not found on Zenodo (optional): {miss}\n"
+                f"App works fine without them."
+            )
+
+        return True, f"✅ All BattLeDIM files downloaded! ({got})"
 
     # ── Data loading ─────────────────────────────────────────────────────
 
     def load_scada_2018(self) -> Optional[Dict[str, pd.DataFrame]]:
-        """Load 2018 SCADA training data."""
         path = self._resolve_path("scada_2018")
         if path is None:
             return None
@@ -316,7 +256,6 @@ class BattLeDIMLoader:
             return None
 
     def load_scada_2019(self) -> Optional[Dict[str, pd.DataFrame]]:
-        """Load 2019 SCADA test data."""
         path = self._resolve_path("scada_2019")
         if path is None:
             return None
@@ -329,7 +268,6 @@ class BattLeDIMLoader:
             return None
 
     def load_leaks_2019(self) -> Optional[pd.DataFrame]:
-        """Load 2019 leak labels (optional — may not be on Zenodo)."""
         path = self._resolve_path("leaks_2019")
         if path is None:
             return None
@@ -342,7 +280,7 @@ class BattLeDIMLoader:
             return None
 
     def get_network_statistics(self) -> Dict[str, Any]:
-        """Network stats — parses INP if available, else uses published values."""
+        """Published L-Town stats — optionally parsed from INP."""
         stats: Dict[str, Any] = {
             "n_junctions": 782, "n_pipes": 909,
             "total_length_km": 42.6, "n_leaks_2019": 23,
@@ -359,54 +297,31 @@ class BattLeDIMLoader:
                     "n_junctions": wn.num_junctions,
                     "n_pipes":     wn.num_pipes,
                     "total_length_km": round(
-                        sum(wn.get_link(p).length for p in wn.pipe_name_list) / 1000, 2
-                    ),
+                        sum(wn.get_link(p).length
+                            for p in wn.pipe_name_list) / 1000, 2),
                     "status": "LOADED",
                 })
             except Exception as exc:
                 logger.warning("Cannot parse INP: %s", exc)
         return stats
 
-    def get_pressure_timeseries(self, year: int = 2018, day: int = 1) -> Optional[pd.DataFrame]:
-        """Return pressure data for one day (288 rows × n_sensor cols)."""
-        fn     = self.load_scada_2018 if year == 2018 else self.load_scada_2019
+    def get_pressure_timeseries(self,
+                                year: int = 2018,
+                                day: int = 1) -> Optional[pd.DataFrame]:
+        fn = self.load_scada_2018 if year == 2018 else self.load_scada_2019
         result = fn()
         if result is None:
             return None
         df = result["pressures"]
-
         if hasattr(df.index, "dayofyear"):
             try:
-                mask = df.index.dayofyear == day
-                sliced = df[mask]
+                sliced = df[df.index.dayofyear == day]
                 return sliced if len(sliced) > 0 else df.iloc[:288]
             except Exception:
                 pass
-
-        samp = 288
+        samp  = 288
         start = (day - 1) * samp
-        return df.iloc[start: start + samp] if start < len(df) else df.iloc[:samp]
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _merge_downloads(src_root: Path, dest: Path) -> None:
-    """Move BattLeDIM files from gdown output subtree into dest."""
-    known: set = set()
-    for alts in FILENAME_ALTERNATIVES.values():
-        known.update(a.lower() for a in alts)
-
-    for item in src_root.rglob("*"):
-        if item.is_file() and item.name.lower() in known:
-            target = dest / item.name
-            if not target.exists():
-                try:
-                    shutil.move(str(item), str(target))
-                    logger.info("Moved %s → %s", item.name, target)
-                except Exception as exc:
-                    logger.warning("Could not move %s: %s", item.name, exc)
+        return df.iloc[start:start + samp] if start < len(df) else df.iloc[:samp]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -425,18 +340,15 @@ def get_loader() -> BattLeDIMLoader:
 
 def initialize_battledim(show_progress: bool = False) -> Tuple[bool, str]:
     """
-    Check BattLeDIM presence; auto-download from Zenodo if needed.
-    Called once at Streamlit startup.
+    Check BattLeDIM presence; download from Zenodo if missing.
+    Returns (success, message).  Success = at least SCADA files present.
     """
     loader = get_loader()
-    # Success if at minimum the 3 required files exist
     if loader.required_files_present():
         status = loader.check_files_exist()
-        leaks_ok = status.get("leaks_2019", False)
-        if leaks_ok:
-            return True, "✅ BattLeDIM dataset fully present"
-        return True, "✅ BattLeDIM dataset present (leak labels optional — not found)"
-    logger.info("BattLeDIM files missing — downloading from Zenodo …")
+        have   = [k for k, v in status.items() if v]
+        return True, f"✅ BattLeDIM ready — files present: {have}"
+    logger.info("BattLeDIM missing — downloading from Zenodo …")
     return loader.download_dataset()
 
 
@@ -446,16 +358,12 @@ def initialize_battledim(show_progress: bool = False) -> Tuple[bool, str]:
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("data_loader.py — self-test")
-    print("=" * 60)
-
     for city in ["Алматы", "Астана", "Туркестан"]:
         print(f"{city}: {get_real_tariff(city):.5f} ₸/л | "
               f"{get_real_pipe_wear(city)}% | {get_estimated_pipe_age(city)} лет")
 
     loader = get_loader()
     print("\nFile status:", loader.check_files_exist())
-
     ok, msg = initialize_battledim()
     print(f"Init: {ok} — {msg}")
-    print("Network stats:", loader.get_network_statistics())
+    print("Stats:", loader.get_network_statistics())
