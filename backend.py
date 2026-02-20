@@ -1,13 +1,13 @@
 """
 Smart Shygyn PRO v3 — BACKEND ENGINE
-FIXED v2:
+FIXED v3:
 - EPANET result validation: physically impossible pressures trigger fallback
 - Minimum pump head enforcement to prevent non-convergence
 - run_simulation returns zero-results on invalid output (not just on exception)
 - Leak area sanity clamped to prevent EPANET divergence
 - build_network: reservoir head boosted automatically if too low for elevation
-- Healthy baseline cached so it's not rebuilt on every render
-- All original logic preserved
+- MNF anomaly: fixed sign logic — anomaly only when flow ABOVE baseline (leak = excess flow)
+- Failure probability: guard against zero-pressure fallback showing fake 50% everywhere
 """
 
 import gc
@@ -112,10 +112,8 @@ class CityManager:
 
     def min_required_pump_head(self, grid_size: int = 4) -> float:
         """
-        Returns the minimum pump head needed so EPANET can converge.
-        = max node elevation + 30m service pressure margin + 10m friction buffer.
-        For Алматы this is ~1000 + 30 + 10 = 1040m — but we work in relative
-        heads, so we just ensure head > elev_max + 40.
+        Minimum pump head so EPANET can converge.
+        = elev_max + 40m service pressure margin.
         """
         return self.config.elev_max + 40.0
 
@@ -211,13 +209,12 @@ class HydraulicPhysics:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 1C: HYDRAULIC ENGINE  — FIXED
+# PART 1C: HYDRAULIC ENGINE
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ── Physical sanity bounds ────────────────────────────────────────────────
-_MIN_PRESSURE_BAR   = -5.0    # below this → EPANET diverged
-_MAX_PRESSURE_BAR   = 150.0   # above this → EPANET diverged
-_MAX_LEAK_AREA_CM2  = 5.0     # clamp runaway emitter coefficients
+_MIN_PRESSURE_BAR  = -5.0
+_MAX_PRESSURE_BAR  = 150.0
+_MAX_LEAK_AREA_CM2 = 5.0
 
 
 def _make_zero_results(wn: wntr.network.WaterNetworkModel,
@@ -234,8 +231,8 @@ def _make_zero_results(wn: wntr.network.WaterNetworkModel,
 
 def _validate_results(results: Dict[str, pd.DataFrame]) -> bool:
     """
-    Returns True only if EPANET output looks physically reasonable.
-    Catches the silent-divergence case where EPANET exits without exception
+    Returns True only if EPANET output is physically reasonable.
+    Catches silent divergence where EPANET exits without exception
     but produces nonsense values (e.g. -75 bar).
     """
     pressure = results["pressure"]
@@ -244,11 +241,11 @@ def _validate_results(results: Dict[str, pd.DataFrame]) -> bool:
     p_min = pressure.min().min()
     p_max = pressure.max().max()
     if p_min < _MIN_PRESSURE_BAR:
-        logger.warning("EPANET: min pressure %.2f bar < %.1f — diverged silently",
+        logger.warning("EPANET: min pressure %.2f bar < %.1f — silent divergence",
                        p_min, _MIN_PRESSURE_BAR)
         return False
     if p_max > _MAX_PRESSURE_BAR:
-        logger.warning("EPANET: max pressure %.2f bar > %.1f — diverged silently",
+        logger.warning("EPANET: max pressure %.2f bar > %.1f — silent divergence",
                        p_max, _MAX_PRESSURE_BAR)
         return False
     return True
@@ -259,7 +256,6 @@ class HydraulicEngine:
         self.city    = city_manager
         self.physics = HydraulicPhysics()
 
-    # ── FIX: auto-boost pump head if below city minimum ──────────────────
     def _safe_pump_head(self, pump_head_m: float) -> float:
         min_head = self.city.min_required_pump_head()
         if pump_head_m < min_head:
@@ -283,10 +279,7 @@ class HydraulicEngine:
                       leak_start_hour: float = 12.0,
                       contingency_pipe: Optional[str] = None) -> wntr.network.WaterNetworkModel:
 
-        # ── FIX 1: ensure pump head is sufficient for city elevations ─────
-        pump_head_m  = self._safe_pump_head(pump_head_m)
-
-        # ── FIX 2: clamp leak area so emitter doesn't diverge EPANET ─────
+        pump_head_m   = self._safe_pump_head(pump_head_m)
         leak_area_cm2 = min(leak_area_cm2, _MAX_LEAK_AREA_CM2)
 
         wn = wntr.network.WaterNetworkModel()
@@ -320,7 +313,6 @@ class HydraulicEngine:
                     length=pipe_length_m, diameter=pipe_diameter_m * 2.0,
                     roughness=roughness)
 
-        # ── Smart pump via WNTR time controls ────────────────────────────
         if smart_pump:
             night_head = pump_head_m * 0.70
             wn.add_pattern("pump_pattern", [
@@ -331,17 +323,18 @@ class HydraulicEngine:
             res.head_pattern_name = "pump_pattern"
             res.base_head = pump_head_m
 
-        # ── Leak via emitter ──────────────────────────────────────────────
         if leak_node and leak_node in wn.node_name_list:
             node = wn.get_node(leak_node)
+            effective_pressure_bar = max(
+                (pump_head_m - self.city.config.elev_max) * 0.098, 0.5
+            )
             emitter_k = self.physics.emitter_coefficient_from_area(
                 leak_area_cm2,
-                pressure_bar=max((pump_head_m - self.city.config.elev_max) * 0.098, 0.5),
+                pressure_bar=effective_pressure_bar,
                 exponent=0.5
             )
             node.emitter_coefficient = emitter_k
 
-        # ── N-1: remove pipe ─────────────────────────────────────────────
         if contingency_pipe and contingency_pipe in wn.link_name_list:
             wn.remove_link(contingency_pipe)
 
@@ -361,23 +354,19 @@ class HydraulicEngine:
             raw = sim.run_sim()
 
             results = {
-                "pressure": raw.node["pressure"] * 0.1,    # m → bar
-                "flow":     raw.link["flowrate"] * 1000.0, # m³/s → L/s
-                "age":      raw.node["quality"] / 3600.0,  # s → hours
+                "pressure": raw.node["pressure"] * 0.1,
+                "flow":     raw.link["flowrate"] * 1000.0,
+                "age":      raw.node["quality"] / 3600.0,
             }
 
-            # ── FIX: validate before returning ───────────────────────────
             if not _validate_results(results):
-                logger.error(
-                    "EPANET returned physically impossible values "
-                    "(silent divergence) — using zero fallback."
-                )
+                logger.error("EPANET silent divergence — using zero fallback.")
                 return _make_zero_results(wn, n_hours=max(n_hours, 24))
 
             return results
 
         except Exception as exc:
-            logger.error("EPANET raised exception — zero fallback. %s: %s",
+            logger.error("EPANET exception — zero fallback. %s: %s",
                          type(exc).__name__, exc)
             return _make_zero_results(wn, n_hours=max(n_hours, 24))
 
@@ -408,7 +397,6 @@ class LeakDetectionAnalytics:
     def build_healthy_baseline(engine: HydraulicEngine,
                                 material: str, pipe_age: float,
                                 pump_head_m: float) -> Dict[str, float]:
-        """Run simulation WITHOUT leak — returns mean pressure per node."""
         wn_healthy = engine.build_network(
             material=material, pipe_age=pipe_age,
             pump_head_m=pump_head_m, leak_node=None
@@ -430,7 +418,6 @@ class LeakDetectionAnalytics:
     ) -> Tuple[str, Dict[str, float], float]:
         graph = wn.get_graph()
 
-        # Step 1: normalised residuals at sensor nodes
         sensor_residuals: Dict[str, float] = {}
         for sensor in sensor_nodes:
             h_p = healthy_baseline.get(sensor, 1.0)
@@ -440,7 +427,6 @@ class LeakDetectionAnalytics:
             else:
                 sensor_residuals[sensor] = 0.0
 
-        # Step 2: IDW to all non-reservoir nodes
         all_nodes = [n for n in wn.node_name_list if n != "Res"]
         residuals: Dict[str, float] = {}
 
@@ -486,13 +472,25 @@ class LeakDetectionAnalytics:
     def detect_mnf_anomaly(df: pd.DataFrame,
                            expected_mnf_lps: float = 0.4,
                            threshold_pct: float = 15.0) -> Tuple[bool, float]:
+        """
+        FIXED: anomaly only when night flow is ABOVE baseline.
+        Leak = extra flow at night. Flow BELOW baseline = no supply, not a leak.
+        """
         night_mask = (df["Hour"] >= 2) & (df["Hour"] <= 5)
         night_data = df[night_mask]
         if len(night_data) == 0:
             return False, 0.0
+
         actual_mnf  = night_data["Flow Rate (L/s)"].mean()
+
+        # FIXED: signed percentage — positive = excess flow = leak signal
+        #        negative = low flow = normal or no supply (not a leak)
         anomaly_pct = ((actual_mnf - expected_mnf_lps) / expected_mnf_lps) * 100.0
-        return anomaly_pct > threshold_pct, round(anomaly_pct, 1)
+
+        # Only flag as anomaly when flow exceeds baseline (not when it's below)
+        is_anomaly = anomaly_pct > threshold_pct
+
+        return is_anomaly, round(anomaly_pct, 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -536,9 +534,9 @@ class ContingencyAnalysis:
             "time_to_criticality_h": round(time_to_critical_h, 1),
             "best_isolation_valve":  failed_pipe,
             "impact_level": (
-                "CRITICAL" if virtual_citizens > 1000
-                else "MODERATE" if virtual_citizens > 500
-                else "LOW"
+                "CRITICAL"  if virtual_citizens > 1000 else
+                "MODERATE"  if virtual_citizens > 500  else
+                "LOW"
             ),
         }
 
@@ -666,7 +664,6 @@ class SmartShygynBackend:
                             leak_threshold_bar: float = 2.7,
                             repair_cost_kzt: float = 50_000) -> Dict:
 
-        # ── Build network WITH leak ───────────────────────────────────────
         wn_leaky = self.engine.build_network(
             material=material, pipe_age=pipe_age,
             pump_head_m=pump_head_m, smart_pump=smart_pump,
@@ -674,10 +671,8 @@ class SmartShygynBackend:
             contingency_pipe=contingency_pipe
         )
 
-        # ── Run simulation ────────────────────────────────────────────────
         results = self.engine.run_simulation(wn_leaky, sampling_rate_hz)
 
-        # ── Extract focal node time-series ────────────────────────────────
         focal = (leak_node
                  if leak_node and leak_node in results["pressure"].columns
                  else "N_0_0")
@@ -686,13 +681,11 @@ class SmartShygynBackend:
         age      = results["age"][focal]
         flow     = results["flow"]["P_Main"]
 
-        # ── Sensor noise + smoothing ──────────────────────────────────────
         pressure_smooth = self.engine.apply_signal_smoothing(
             self.engine.add_sensor_noise(pressure, noise_std=0.04), window=3)
         flow_smooth = self.engine.apply_signal_smoothing(
             self.engine.add_sensor_noise(flow, noise_std=0.08), window=3)
 
-        # ── Build DataFrame ───────────────────────────────────────────────
         n_points       = len(pressure_smooth)
         hours          = np.arange(n_points) / sampling_rate_hz
         demand_pattern = HydraulicPhysics.create_demand_pattern()
@@ -706,38 +699,31 @@ class SmartShygynBackend:
                                        n_points // 24 + 1)[:n_points],
         })
 
-        # Smart pump head column (visual)
         df["Pump Head (m)"] = [
             pump_head_m * 0.7 if (int(h) % 24 >= 23 or int(h) % 24 < 6)
             else pump_head_m
             for h in hours
         ] if smart_pump else pump_head_m
 
-        # ── Sensor placement ──────────────────────────────────────────────
         sensors = self.leak_detector.place_sensors(list(wn_leaky.node_name_list))
 
-        # ── Healthy baseline (no leak) ────────────────────────────────────
         healthy_pressures = self.leak_detector.build_healthy_baseline(
             self.engine, material, pipe_age, pump_head_m
         )
 
-        # ── Observed = real per-node mean pressure from simulation ────────
         observed_pressures = {
             node: float(results["pressure"][node].mean())
             for node in wn_leaky.node_name_list
             if node != "Res" and node in results["pressure"].columns
         }
 
-        # ── Residual matrix localisation ──────────────────────────────────
         predicted_node, residuals, confidence = \
             self.leak_detector.residual_matrix_localization(
                 healthy_pressures, observed_pressures, sensors, wn_leaky
             )
 
-        # ── MNF anomaly ───────────────────────────────────────────────────
         mnf_anomaly, mnf_pct = self.leak_detector.detect_mnf_anomaly(df)
 
-        # ── Per-node failure probabilities ────────────────────────────────
         degradation_pct = HydraulicPhysics.degradation_percentage(
             material, pipe_age, temp=self.city_manager.season_temp
         )
@@ -749,7 +735,6 @@ class SmartShygynBackend:
                 failure_probs[node] = 0.0
             elif node in results["pressure"].columns:
                 node_avg_pressure = float(results["pressure"][node].mean())
-                # Guard against fallback zeros showing 50% failure everywhere
                 if node_avg_pressure <= 0.0:
                     failure_probs[node] = 0.0
                 else:
@@ -759,7 +744,6 @@ class SmartShygynBackend:
             else:
                 failure_probs[node] = 0.0
 
-        # ── N-1 contingency ───────────────────────────────────────────────
         n1_result = None
         if contingency_pipe:
             avg_demand_lps = df["Flow Rate (L/s)"].mean() / 16
@@ -767,7 +751,6 @@ class SmartShygynBackend:
                 wn_leaky, contingency_pipe, avg_demand_lps
             )
 
-        # ── Economics ─────────────────────────────────────────────────────
         econ_report = self.economics.full_economic_report(
             df=df, leak_threshold_bar=leak_threshold_bar,
             sampling_rate_hz=sampling_rate_hz,
@@ -776,7 +759,6 @@ class SmartShygynBackend:
             n_sensors=len(sensors), repair_cost_kzt=repair_cost_kzt
         )
 
-        # ── Isolation valves ──────────────────────────────────────────────
         isolation_pipes, isolation_neighbors = [], []
         if leak_node:
             isolation_pipes, isolation_neighbors = \
