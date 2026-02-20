@@ -1086,65 +1086,62 @@ def render_dashboard(results: dict, adv: dict, config: dict):
             loader = get_loader()
             fs = loader.check_files_exist()
             if fs.get("scada_2018") or fs.get("scada_2019"):
-    raw18 = loader.load_scada_2018()
-    raw19 = loader.load_scada_2019()
-    leaks = loader.load_leaks_2019()
+                raw18 = loader.load_scada_2018()
+                raw19 = loader.load_scada_2019()
+                leaks = loader.load_leaks_2019()
 
-    s19 = raw19["pressures"].dropna(axis=1, how="all") if raw19 else None
-    s18 = raw18["pressures"].dropna(axis=1, how="all") if raw18 else None
+                s19 = raw19["pressures"].dropna(axis=1, how="all") if raw19 else None
+                s18 = raw18["pressures"].dropna(axis=1, how="all") if raw18 else None
 
-    # Проверяем что всё есть
-    if s19 is None:
-        st.warning("Нет данных SCADA 2019 — загрузи BattLeDIM.")
-    elif leaks is None:
-        st.warning("Нет файла утечек leaks_2019 — ML сравнение невозможно.")
-    else:
-        # Фолбэк для s18
-        if s18 is None:
-            st.info("SCADA 2018 не найден — используем первые 60 дней 2019 как baseline.")
-            cut = s19.index[0] + pd.Timedelta(days=60)
-            s18 = s19[s19.index < cut]
-            s19 = s19[s19.index >= cut]
-
-        # Проверяем DatetimeIndex
-        if not isinstance(s19.index, pd.DatetimeIndex):
-            st.error("Индекс SCADA не является DatetimeIndex — Z-score работать не будет.")
-        else:
-            ml1, ml2 = st.columns([1, 2])
-            with ml1:
-                z_thr = st.slider("Z-score порог", 1.5, 5.0, 3.0, 0.1, key="cmp_z")
-                m_s   = st.slider("Мин. датчиков", 1, 5, 2, key="cmp_ms")
-                cont  = st.slider("IF contamination", 0.01, 0.15, 0.05, 0.01, key="cmp_c")
-                run_c = st.button("▶ Сравнить методы", use_container_width=True)
-            with ml2:
-                if run_c:
-                    with st.spinner("Обучаем и сравниваем …"):
-                        try:
-                            baseline = build_baseline(s18)
-                            cmp_df = compare_methods(
-                                s19, leaks,
-                                scada_2018_df=s18,
-                                baseline=baseline,
-                                z_threshold=z_thr,
-                                min_sensors=m_s,
-                                contamination=cont,
-                            )
-                            st.dataframe(cmp_df, use_container_width=True, hide_index=True)
-                            best = cmp_df.dropna(subset=["F1 %"]).sort_values("F1 %", ascending=False)
-                            if len(best):
-                                st.success(f"🏆 Лучший: **{best.iloc[0]['Метод']}** "
-                                           f"— F1 {best.iloc[0]['F1 %']:.1f}%")
-                        except Exception as e:
-                            st.error(f"Ошибка: {e}")
-                            import traceback
-                            st.code(traceback.format_exc())
+                if s19 is None:
+                    st.warning("Нет данных SCADA 2019 — загрузи BattLeDIM.")
+                elif leaks is None:
+                    st.warning("Нет файла утечек leaks_2019 — ML сравнение невозможно.")
                 else:
-                    st.info("Нажми **▶ Сравнить методы**")
-else:
-    st.info("Загрузи BattLeDIM для ML сравнения.")
+                    if s18 is None:
+                        st.info("SCADA 2018 не найден — используем первые 60 дней 2019 как baseline.")
+                        cut = s19.index[0] + pd.Timedelta(days=60)
+                        s18 = s19[s19.index < cut]
+                        s19 = s19[s19.index >= cut]
+
+                    if not isinstance(s19.index, pd.DatetimeIndex):
+                        st.error("Индекс SCADA не является DatetimeIndex — Z-score работать не будет.")
+                    else:
+                        ml1, ml2 = st.columns([1, 2])
+                        with ml1:
+                            z_thr = st.slider("Z-score порог", 1.5, 5.0, 3.0, 0.1, key="cmp_z")
+                            m_s   = st.slider("Мин. датчиков", 1, 5, 2, key="cmp_ms")
+                            cont  = st.slider("IF contamination", 0.01, 0.15, 0.05, 0.01, key="cmp_c")
+                            run_c = st.button("▶ Сравнить методы", use_container_width=True)
+                        with ml2:
+                            if run_c:
+                                with st.spinner("Обучаем и сравниваем …"):
+                                    try:
+                                        baseline = build_baseline(s18)
+                                        cmp_df = compare_methods(
+                                            s19, leaks,
+                                            scada_2018_df=s18,
+                                            baseline=baseline,
+                                            z_threshold=z_thr,
+                                            min_sensors=m_s,
+                                            contamination=cont,
+                                        )
+                                        st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+                                        best = cmp_df.dropna(subset=["F1 %"]).sort_values("F1 %", ascending=False)
+                                        if len(best):
+                                            st.success(f"🏆 Лучший: **{best.iloc[0]['Метод']}** "
+                                                       f"— F1 {best.iloc[0]['F1 %']:.1f}%")
+                                    except Exception as e:
+                                        st.error(f"Ошибка: {e}")
+                                        import traceback
+                                        st.code(traceback.format_exc())
+                            else:
+                                st.info("Нажми **▶ Сравнить методы**")
+            else:
+                st.info("Загрузи BattLeDIM для ML сравнения.")
 
     # ── OPTIONAL TABS ─────────────────────────────────────────────────────
-    if _DEMO_OK and tab_alerts: 
+    if _DEMO_OK and tab_alerts:
         with tab_alerts: render_alerts_tab(results, config, dark_mode=dm)
     if _DEMO_OK and tab_demo:
         with tab_demo: render_demo_tab(dark_mode=dm)
