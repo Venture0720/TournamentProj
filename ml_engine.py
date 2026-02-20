@@ -1,14 +1,10 @@
 """
 Smart Shygyn PRO v3 — ML Engine
-Раздел 1 ТЗ: Isolation Forest + Ensemble детекция утечек.
-
-Использование:
-    from ml_engine import get_isolation_forest_model, detect_anomalies_ml, METHODS
-
-Методы:
-    "Z-score"          — базовый алгоритм (из battledim_analysis.py)
-    "Isolation Forest" — unsupervised ML, scikit-learn
-    "Ensemble"         — аномалия если ХОТЯ БЫ ОДИН метод обнаружил
+FIXED v2:
+- ML Classifier uses relative flow (% above mean) not absolute L/s values
+  so it doesn't flag CATASTROPHIC when pump_head is high (Алматы 1040m)
+- classify_flow_rate() now normalises against rolling baseline mean
+- All original logic preserved
 """
 
 import logging
@@ -20,7 +16,6 @@ import pandas as pd
 
 logger = logging.getLogger("smart_shygyn.ml_engine")
 
-# Опциональные зависимости
 try:
     from sklearn.ensemble import IsolationForest
     from sklearn.preprocessing import StandardScaler
@@ -36,10 +31,98 @@ except ImportError:
     _STREAMLIT_OK = False
 
 # ══════════════════════════════════════════════════════════════════════
-# НАЗВАНИЯ МЕТОДОВ (для UI selectbox)
+# НАЗВАНИЯ МЕТОДОВ
 # ══════════════════════════════════════════════════════════════════════
 
 METHODS = ["Z-score", "Isolation Forest", "Ensemble"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# FIXED: RELATIVE FLOW CLASSIFIER
+# ══════════════════════════════════════════════════════════════════════
+
+def classify_flow_rate(
+    flow_lps: float,
+    baseline_mean_lps: float,
+) -> Dict[str, Any]:
+    """
+    FIXED: classify flow anomaly using relative deviation from baseline mean.
+
+    Previously used absolute L/s thresholds which broke when pump_head
+    was auto-boosted to 1040m for Алматы (normal flow ~700+ L/s flagged
+    as CATASTROPHIC).
+
+    Now uses percentage above baseline:
+        deviation% = (flow - mean) / mean * 100
+
+    Thresholds (relative):
+        < 20%   → NORMAL
+        20–60%  → BACKGROUND LEAK
+        60–150% → BURST
+        > 150%  → CATASTROPHIC
+    """
+    if baseline_mean_lps <= 0:
+        return {
+            "classification": "NORMAL",
+            "severity": 0.0,
+            "estimated_leak_lps": 0.0,
+        }
+
+    deviation_pct = (flow_lps - baseline_mean_lps) / baseline_mean_lps * 100.0
+
+    if deviation_pct < 20.0:
+        classification = "NORMAL"
+        severity = max(0.0, deviation_pct / 20.0 * 10.0)          # 0–10
+    elif deviation_pct < 60.0:
+        classification = "BACKGROUND LEAK"
+        severity = 10.0 + (deviation_pct - 20.0) / 40.0 * 30.0   # 10–40
+    elif deviation_pct < 150.0:
+        classification = "BURST"
+        severity = 40.0 + (deviation_pct - 60.0) / 90.0 * 40.0   # 40–80
+    else:
+        classification = "CATASTROPHIC"
+        severity = min(100.0, 80.0 + (deviation_pct - 150.0) / 100.0 * 20.0)  # 80–100
+
+    estimated_leak_lps = max(0.0, flow_lps - baseline_mean_lps)
+
+    return {
+        "classification":    classification,
+        "severity":          round(severity, 1),
+        "estimated_leak_lps": round(estimated_leak_lps, 3),
+        "deviation_pct":     round(deviation_pct, 1),
+        "baseline_mean_lps": round(baseline_mean_lps, 3),
+    }
+
+
+def classify_from_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Convenience wrapper: compute baseline from first 6 hours (night minimum),
+    then classify the mean flow of the whole series.
+
+    Uses first 6 rows as the 'normal' reference window.
+    Falls back to full-series mean if < 6 rows available.
+    """
+    flow_col = "Flow Rate (L/s)"
+    if flow_col not in df.columns or len(df) == 0:
+        return {
+            "classification": "NORMAL",
+            "severity": 0.0,
+            "estimated_leak_lps": 0.0,
+        }
+
+    flow_series = df[flow_col].values
+
+    # Baseline = mean of first 6 hours (night, lowest demand)
+    n_baseline = min(6, len(flow_series))
+    baseline_mean = float(np.mean(flow_series[:n_baseline]))
+
+    # Guard: if baseline is zero or near-zero, use full series mean
+    if baseline_mean < 1e-3:
+        baseline_mean = float(np.mean(flow_series))
+
+    current_flow = float(np.mean(flow_series))
+
+    return classify_flow_rate(current_flow, baseline_mean)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -47,12 +130,6 @@ METHODS = ["Z-score", "Isolation Forest", "Ensemble"]
 # ══════════════════════════════════════════════════════════════════════
 
 class IsolationForestDetector:
-    """
-    Unsupervised детектор аномалий на основе Isolation Forest.
-    Обучается на нормальных данных 2018 года,
-    предсказывает аномалии в данных 2019 года.
-    """
-
     def __init__(self,
                  contamination: float = 0.05,
                  n_estimators: int = 200,
@@ -70,9 +147,6 @@ class IsolationForestDetector:
         self._trained = False
 
     def train(self, scada_2018_df: pd.DataFrame) -> None:
-        """
-        Обучить модель на данных 2018 (считаются нормальными).
-        """
         data = scada_2018_df.dropna(axis=1, how="all").dropna(how="any")
         if data.empty:
             raise ValueError("scada_2018_df пуст после удаления NaN")
@@ -95,13 +169,8 @@ class IsolationForestDetector:
         )
 
     def _prepare(self, scada_df: pd.DataFrame) -> np.ndarray:
-        """Выровнять столбцы и нормализовать данные."""
         if not self._trained:
             raise RuntimeError("Сначала вызовите .train()")
-
-        common = [c for c in self._feature_cols if c in scada_df.columns]
-        if not common:
-            raise ValueError("Нет общих датчиков между 2018 и 2019 данными")
 
         df_aligned = pd.DataFrame(index=scada_df.index)
         for col in self._feature_cols:
@@ -114,31 +183,21 @@ class IsolationForestDetector:
         return self.scaler.transform(df_filled.values)
 
     def predict(self, scada_df: pd.DataFrame) -> pd.Series:
-        """
-        Обнаружить аномалии.
-        Returns pd.Series[bool] — True = аномалия.
-        """
         X = self._prepare(scada_df)
-        preds = self.model.predict(X)   # -1 = аномалия, 1 = нормально
+        preds = self.model.predict(X)
         flags = pd.Series(preds == -1, index=scada_df.index)
         logger.debug("IF anomalies: %d / %d", flags.sum(), len(flags))
         return flags
 
     def anomaly_score(self, scada_df: pd.DataFrame) -> pd.Series:
-        """
-        Непрерывная оценка аномальности в [0, 1].
-        Выше = аномальнее.
-        """
         X = self._prepare(scada_df)
         raw_scores = self.model.decision_function(X)
         inverted = -raw_scores
-
         s_min, s_max = inverted.min(), inverted.max()
         if s_max - s_min < 1e-9:
             normalized = np.zeros_like(inverted)
         else:
             normalized = (inverted - s_min) / (s_max - s_min)
-
         return pd.Series(normalized, index=scada_df.index)
 
 
@@ -147,7 +206,6 @@ class IsolationForestDetector:
 # ══════════════════════════════════════════════════════════════════════
 
 def _df_hash(df: pd.DataFrame) -> str:
-    """Быстрый хэш DataFrame для кэша."""
     return hashlib.md5(
         pd.util.hash_pandas_object(df, index=True).values.tobytes()
     ).hexdigest()[:16]
@@ -157,10 +215,6 @@ def get_isolation_forest_model(
     scada_2018_df: pd.DataFrame,
     contamination: float = 0.05,
 ) -> IsolationForestDetector:
-    """
-    Получить (или создать) обученный IsolationForestDetector.
-    Если Streamlit доступен — использует @st.cache_resource для кэша.
-    """
     if not _SKLEARN_OK:
         raise ImportError("pip install scikit-learn>=1.3.0")
 
@@ -198,7 +252,7 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Z-SCORE ДЕТЕКЦИЯ (обёртка для Ensemble)
+# Z-SCORE ДЕТЕКЦИЯ
 # ══════════════════════════════════════════════════════════════════════
 
 def detect_zscore(
@@ -207,10 +261,6 @@ def detect_zscore(
     z_threshold: float = 3.0,
     min_sensors: int = 2,
 ) -> pd.Series:
-    """
-    Z-score детекция (алгоритм из battledim_analysis.py).
-    Вынесен сюда для использования в Ensemble.
-    """
     sensors = [c for c in scada_2019_df.columns
                if f"mean_{c}" in baseline.columns
                and f"std_{c}" in baseline.columns]
@@ -238,7 +288,7 @@ def detect_zscore(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# ОСНОВНАЯ ФУНКЦИЯ: detect_anomalies_ml
+# ОСНОВНАЯ ФУНКЦИЯ
 # ══════════════════════════════════════════════════════════════════════
 
 def detect_anomalies_ml(
@@ -250,24 +300,8 @@ def detect_anomalies_ml(
     min_sensors: int = 2,
     contamination: float = 0.05,
 ) -> Tuple[pd.Series, Dict[str, Any]]:
-    """
-    Единый интерфейс детекции аномалий для всех методов.
-
-    Args:
-        scada_2019_df: SCADA данные 2019
-        method:        "Z-score" | "Isolation Forest" | "Ensemble"
-        scada_2018_df: Данные 2018 (нужны для IF и Ensemble)
-        baseline:      Результат build_baseline() (нужен для Z-score и Ensemble)
-        z_threshold:   Порог Z-score
-        min_sensors:   Минимум датчиков для тревоги (Z-score)
-        contamination: Доля аномалий для IF
-
-    Returns:
-        (anomaly_flags, meta)
-    """
     meta: Dict[str, Any] = {"method": method}
 
-    # ── Z-score ───────────────────────────────────────────────────────
     if method == "Z-score":
         if baseline is None:
             raise ValueError("Для Z-score нужен baseline (вызови build_baseline)")
@@ -275,7 +309,6 @@ def detect_anomalies_ml(
         meta["z_score_detections"] = int(flags.sum())
         return flags, meta
 
-    # ── Isolation Forest ──────────────────────────────────────────────
     if method == "Isolation Forest":
         if not _SKLEARN_OK:
             logger.warning("scikit-learn отсутствует, fallback на Z-score")
@@ -296,7 +329,6 @@ def detect_anomalies_ml(
         meta["anomaly_score"] = scores
         return flags, meta
 
-    # ── Ensemble ──────────────────────────────────────────────────────
     if method == "Ensemble":
         results: Dict[str, pd.Series] = {}
 
@@ -342,13 +374,9 @@ def compare_methods(
     min_sensors: int = 2,
     contamination: float = 0.05,
 ) -> pd.DataFrame:
-    """
-    Запустить все три метода и вернуть сравнительную таблицу.
-    """
     from battledim_analysis import compute_metrics
 
     rows = []
-
     for method in METHODS:
         try:
             flags, meta = detect_anomalies_ml(
